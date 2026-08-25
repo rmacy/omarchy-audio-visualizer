@@ -5,7 +5,7 @@ import qs.Commons
 
 BarWidget {
   id: root
-  moduleName: "bitr0t.spotify-player"
+  moduleName: "bitr0t.spotify-menu-chip"
 
   readonly property var mediaService: bar?.shell?.serviceFor(root.moduleName)
   readonly property var activePlayer: mediaService ? mediaService.activePlayer : null

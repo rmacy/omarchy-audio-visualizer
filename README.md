@@ -48,9 +48,9 @@ The chip appears in the left bar section when media is playing
 built-in `omarchy.media` widget it replaces.
 
 Manual alternative: clone or copy this folder to
-`~/.config/omarchy/plugins/bitr0t.spotify-player/`, run
+~/.config/omarchy/plugins/bitr0t.spotify-menu-chip/, run
 `omarchy-shell shell rescanPlugins`, then
-`omarchy plugin enable bitr0t.spotify-player`.
+`omarchy plugin enable bitr0t.spotify-menu-chip`.
 
 ## Controls
 
@@ -84,7 +84,7 @@ while this plugin is enabled.
 ## Uninstall
 
 ```bash
-omarchy plugin remove bitr0t.spotify-player
+omarchy plugin remove bitr0t.spotify-menu-chip
 ```
 
 Because the plugin declares `omarchy.clonedFrom: omarchy.media`, removing
