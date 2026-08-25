@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "id": "bitr0t.spotify-player",
+  "name": "Spotify Player",
+  "version": "1.0.0",
+  "author": "Ryan Macy",
+  "license": "MIT",
+  "description": "MPRIS media control service",
+  "kinds": [
+    "service",
+    "bar-widget"
+  ],
+  "keepLoaded": true,
+  "entryPoints": {
+    "service": "Service.qml",
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Spotify Player",
+    "description": "MPRIS now-playing with playback controls",
+    "category": "Media",
+    "aliases": ["spotify-player", "music-chip"],
+    "allowMultiple": false,
+    "defaultSection": "left"
+  },
+  "omarchy": {
+    "clonedFrom": "omarchy.media"
+  }
+}
