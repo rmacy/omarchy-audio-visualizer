@@ -1,15 +1,23 @@
-// Pure visualizer math for the temporal waveform. No Quickshell types here:
-// every function is plain JS over native PCM peak samples so the service and
-// unit tests share identical behavior.
+// Pure visualizer math for the nine-band FFT spectrum. No Quickshell types
+// here: every function is plain deterministic JS over raw Cava ASCII frames
+// so the service and unit tests share identical behavior.
 
-// Envelope time constants. Attack must be fast enough to catch a 40ms sample
-// window; release slow enough that the waveform decays smoothly between frames.
-var ATTACK_MS = 24
-var RELEASE_MS = 110
+// A raw band value: unsigned decimal digits only. Rejects NaN, Infinity,
+// negative values, exponents, and empty or padded tokens before any numeric
+// coercion can quietly coerce them.
+var BAND_PATTERN = /^\d+(?:\.\d+)?$/
 
-// An exponentially released value never reaches zero, so silent tails below
-// this threshold snap to true zero for a clean idle state.
-var ZERO_SNAP = 0.012
+// Normalized band energy below this floor is digital silence, snapped to
+// exact zero so an idle monitor renders clean zeros instead of noise.
+var SILENCE_FLOOR = 0.008
+
+// Perceptual scaling exponent. Mastered audio concentrates energy in the low
+// bands; a sublinear gamma spreads it across the visual range using pure
+// per-frame math — no smoothing, no time constants, no hidden state.
+var BAND_GAMMA = 0.72
+
+// Silence threshold for the aggregated peak, in scaled units.
+var LIVE_THRESHOLD = 0.02
 
 function zeroLevels(count) {
   var levels = []
@@ -24,36 +32,51 @@ function clampUnit(value) {
   return Math.min(1, Math.max(0, n))
 }
 
-// Advances the waveform one 40ms frame from the coalesced native peak.
-// levels is the previous history (oldest -> newest); the returned object
-// carries the clamped instantaneous peak, the enveloped energy, whether audio
-// is actually flowing, and a fresh history array of exactly `count` entries
-// with energy appended as the newest value.
-function advance(levels, rawPeak, energy, elapsedMs, count) {
-  var observedPeak = clampUnit(rawPeak)
-  // Gate the monitor noise floor, then undo PwNodePeakMonitor's cube-root
-  // display scaling so mastered audio does not pin every column near full.
-  if (observedPeak < ZERO_SNAP) observedPeak = 0
-  var target = observedPeak * observedPeak * observedPeak
-  var previous = clampUnit(energy)
-  var elapsed = isFinite(elapsedMs) && elapsedMs > 0 ? elapsedMs : 0
-
-  var tau = target > previous ? ATTACK_MS : RELEASE_MS
-  var alpha = elapsed > 0 ? 1 - Math.exp(-elapsed / tau) : 0
-  var next = previous + alpha * (target - previous)
-  if (target === 0 && next < ZERO_SNAP) next = 0
+// Parses one raw Cava frame ("0;128;900;...;" with an optional trailing
+// delimiter) into exactly `count` band levels in 0..maxRange units.
+// Band order is preserved: levels[0] is the lowest frequency band and
+// levels[count - 1] the highest. Values above maxRange clamp to it, values
+// below the silence floor snap to zero, and survivors are gamma-scaled.
+// Returns a JSON-safe { levels, peak, energy, live } where peak is the
+// maximum level, energy the mean level, and live whether peak crosses the
+// live threshold — or null for malformed, nonfinite, negative, or
+// wrong-band-count frames.
+function parseSpectrumFrame(line, count, maxRange) {
+  if (typeof line !== "string") return null
 
   var n = Math.max(0, Math.floor(count) || 0)
-  var history = Array.isArray(levels) ? levels.slice() : []
-  history.push(next)
-  while (history.length > n) history.shift()
-  while (history.length < n) history.unshift(0)
+  if (n < 1) return null
+
+  var range = Number(maxRange)
+  if (!isFinite(range) || range <= 0) return null
+
+  var frame = line.replace(/\r?\n$/, "").trim()
+  if (frame.length === 0) return null
+  if (frame.charAt(frame.length - 1) === ";") frame = frame.slice(0, -1)
+
+  var tokens = frame.split(";")
+  if (tokens.length !== n) return null
+
+  var levels = []
+  var peak = 0
+  var sum = 0
+  for (var i = 0; i < n; i++) {
+    var token = tokens[i]
+    if (!BAND_PATTERN.test(token)) return null
+    var raw = Number(token)
+    if (!isFinite(raw) || raw < 0) return null
+    var normalized = Math.min(1, raw / range)
+    var level = normalized < SILENCE_FLOOR ? 0 : Math.pow(normalized, BAND_GAMMA)
+    levels.push(level)
+    if (level > peak) peak = level
+    sum += level
+  }
 
   return {
-    peak: observedPeak,
-    energy: next,
-    live: next >= ZERO_SNAP,
-    levels: history
+    levels: levels,
+    peak: peak,
+    energy: sum / n,
+    live: peak > LIVE_THRESHOLD
   }
 }
 
@@ -61,6 +84,6 @@ if (typeof module !== "undefined") {
   module.exports = {
     zeroLevels: zeroLevels,
     clampUnit: clampUnit,
-    advance: advance
+    parseSpectrumFrame: parseSpectrumFrame
   }
 }

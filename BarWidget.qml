@@ -130,45 +130,42 @@ BarWidget {
       }
 
       Item {
-        id: equalizer
-        readonly property int columnCount: 9
-        readonly property real columnWidth: Style.space(2)
-        readonly property real columnGap: Style.space(1)
+        id: spectrum
+        readonly property int bandCount: 9
+        readonly property real bandWidth: Style.space(2)
+        readonly property real bandGap: Style.space(1)
         readonly property real baselineHeight: Style.space(2)
 
-        width: columnCount * columnWidth + (columnCount - 1) * columnGap
+        width: bandCount * bandWidth + (bandCount - 1) * bandGap
         height: Style.space(16)
         anchors.verticalCenter: parent.verticalCenter
 
         Row {
           anchors.horizontalCenter: parent.horizontalCenter
           anchors.bottom: parent.bottom
-          spacing: equalizer.columnGap
+          spacing: spectrum.bandGap
 
           Repeater {
-            model: equalizer.columnCount
+            model: spectrum.bandCount
 
             Rectangle {
               required property int index
-              readonly property real level: {
+              readonly property real bandLevel: {
                 root.visualizerFrame
                 var value = root.visualizerLevels[index]
                 return isFinite(value) ? Math.max(0, Math.min(1, value)) : 0
               }
 
-              width: equalizer.columnWidth
-              height: equalizer.baselineHeight
-                + level * (equalizer.height - equalizer.baselineHeight)
+              width: spectrum.bandWidth
+              height: spectrum.baselineHeight
+                + bandLevel * (spectrum.height - spectrum.baselineHeight)
               radius: width / 2
               anchors.bottom: parent.bottom
-              color: {
-                if (!root.visualizerAvailable || !root.visualizerLive || level <= 0)
-                  return root.barMutedColor
-                var mix = Math.max(0, Math.min(1, (level - 0.25) / 0.75))
-                return root.mixColor(root.barTextColor, root.barActiveColor, mix)
-              }
+              color: !root.visualizerAvailable || bandLevel <= 0
+                ? root.barMutedColor
+                : root.mixColor(root.barTextColor, root.barActiveColor, bandLevel)
               opacity: root.visualizerAvailable
-                ? 0.55 + (index / (equalizer.columnCount - 1)) * 0.45
+                ? 0.55 + bandLevel * 0.45
                 : 0.28
 
               Behavior on height {

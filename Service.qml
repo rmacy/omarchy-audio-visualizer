@@ -10,6 +10,7 @@ Item {
   id: root
 
   property var shell: null
+  property var manifest: null
   property string preferredPlayerKey: ""
   property var playerStartedAt: ({})
   property var pendingTrackOsd: null
@@ -34,18 +35,26 @@ Item {
   readonly property string album: activePlayer && activePlayer.trackAlbum ? activePlayer.trackAlbum : ""
   readonly property string artUrl: activePlayer && activePlayer.trackArtUrl ? activePlayer.trackArtUrl : ""
   readonly property string identity: activePlayer ? (activePlayer.identity || activePlayer.desktopEntry || "") : ""
-  // Temporal waveform state fed by the active player's real PipeWire peak.
-  readonly property var activePlaybackStream: MediaModel.playbackStreamForPlayer(activePlayer, playbackStreams)
-  readonly property bool visualizerAvailable: activePlaybackStream !== null
-  readonly property bool visualizerMonitoring: visualizerAvailable && activePlayer !== null && activePlayer.isPlaying
+  // Spectrum state: a supervised Cava child analyzes the default PipeWire
+  // output monitor and streams nine low -> high frequency bands (0-1000 raw)
+  // while the active player is playing. Cava frames are the only thing that
+  // moves these values — no native peak sampling or temporal history remains.
+  readonly property string visualizerBackend: "cava"
+  readonly property string cavaExecutable: "/usr/bin/cava"
+  readonly property string cavaConfigPath: manifest && manifest.__sourceDir ? String(manifest.__sourceDir) + "/cava.conf" : ""
+  property bool cavaAvailable: false
+  readonly property bool visualizerAvailable: cavaAvailable && cavaConfigPath !== ""
+  readonly property bool visualizerWanted: visualizerAvailable && activePlayer !== null && activePlayer.isPlaying
+  readonly property bool visualizerMonitoring: visualizerWanted && cavaProcess.running
   readonly property int visualizerLevelCount: 9
+  readonly property int cavaMaxRange: 1000
   property var visualizerLevels: AudioVisualizerModel.zeroLevels(visualizerLevelCount)
   property real visualizerPeak: 0
   property real visualizerEnergy: 0
   property bool visualizerLive: false
   property int visualizerFrame: 0
-  property real visualizerLatestPeak: 0
-  property real visualizerLastFrameAt: 0
+  property string visualizerError: ""
+  property bool cavaStopRequested: false
 
   function isProxyPlayer(player) {
     return MediaModel.isProxyPlayer(player)
@@ -462,7 +471,7 @@ Item {
   // and the Instantiator wires isPlayingChanged for each live player.
   Component.onCompleted: root.syncPlayingOrder()
   onPlayersChanged: root.syncPlayingOrder()
-  onVisualizerMonitoringChanged: root.syncVisualizer()
+  onVisualizerWantedChanged: root.syncVisualizer()
 
   Instantiator {
     model: root.players
@@ -481,60 +490,90 @@ Item {
   }
 
   PwObjectTracker { objects: root.playbackStreams }
-  PwNodePeakMonitor {
-    id: visualizerMonitor
-    node: root.activePlaybackStream
-    enabled: root.visualizerMonitoring
-
-    onNodeChanged: {
-      root.resetVisualizer()
-      if (root.visualizerMonitoring) root.visualizerLastFrameAt = Date.now()
+  // One-shot availability probe: `started` fires only when /usr/bin/cava
+  // exists and executes; a missing binary silently flips running back to
+  // false and we stay unavailable.
+  Process {
+    id: cavaProbe
+    command: [root.cavaExecutable, "-v"]
+    Component.onCompleted: running = true
+    onStarted: root.cavaAvailable = true
+    onExited: function(exitCode) {
+      if (!root.cavaAvailable && exitCode !== 0)
+        root.visualizerError = "cava is unavailable; install it with: omarchy pkg add cava"
     }
+  }
 
-    onPeakChanged: root.visualizerLatestPeak = peak
+  // The single analyzer process, one per service. Any exit that was not
+  // requested by stopVisualizer while media is still playing is unexpected.
+  Process {
+    id: cavaProcess
+    command: [root.cavaExecutable, "-p", root.cavaConfigPath]
+    stdout: SplitParser {
+      onRead: function(data) { root.handleSpectrumLine(data) }
+    }
+    stderr: SplitParser {
+      onRead: function(data) {
+        if (data) root.visualizerError = data
+      }
+    }
+    onExited: function(exitCode, exitStatus) { root.handleCavaExited(exitCode, exitStatus) }
   }
 
   Timer {
-    id: visualizerTimer
-    interval: 40
-    repeat: true
-    running: root.visualizerMonitoring
-    onTriggered: root.pushVisualizerFrame()
+    id: cavaRestartTimer
+    interval: 2000
+    repeat: false
+    onTriggered: if (root.visualizerWanted) root.startVisualizer()
   }
 
   function resetVisualizer() {
-    visualizerLatestPeak = 0
     visualizerPeak = 0
     visualizerEnergy = 0
     visualizerLive = false
     visualizerLevels = AudioVisualizerModel.zeroLevels(visualizerLevelCount)
   }
 
-  function pushVisualizerFrame() {
-    if (!visualizerMonitoring) return
-    var now = Date.now()
-    var frame = AudioVisualizerModel.advance(
-      visualizerLevels,
-      visualizerLatestPeak,
-      visualizerEnergy,
-      now - visualizerLastFrameAt,
-      visualizerLevelCount
-    )
-    visualizerLastFrameAt = now
+  function handleSpectrumLine(line) {
+    if (!visualizerMonitoring || !cavaProcess.running) return
+    var frame = AudioVisualizerModel.parseSpectrumFrame(line, visualizerLevelCount, cavaMaxRange)
+    if (!frame) return
+    visualizerLevels = frame.levels
     visualizerPeak = frame.peak
     visualizerEnergy = frame.energy
     visualizerLive = frame.live
-    visualizerLevels = frame.levels
     visualizerFrame += 1
   }
 
-  function syncVisualizer() {
-    if (visualizerMonitoring) {
-      visualizerLatestPeak = visualizerMonitor.peak
-      visualizerLastFrameAt = Date.now()
+  function startVisualizer() {
+    if (!visualizerWanted || cavaProcess.running) return
+    if (!cavaConfigPath) {
+      visualizerError = "cannot locate cava.conf (plugin source dir unknown)"
       return
     }
+    visualizerError = ""
+    cavaStopRequested = false
+    cavaProcess.running = true
+  }
+
+  function stopVisualizer() {
+    cavaRestartTimer.stop()
+    cavaStopRequested = true
+    if (cavaProcess.running) cavaProcess.running = false
+    visualizerError = ""
     resetVisualizer()
+  }
+
+  function handleCavaExited(exitCode, exitStatus) {
+    resetVisualizer()
+    if (cavaStopRequested || !visualizerWanted) return
+    visualizerError = "cava exited unexpectedly (code " + exitCode + "); retrying"
+    cavaRestartTimer.restart()
+  }
+
+  function syncVisualizer() {
+    if (visualizerWanted) startVisualizer()
+    else stopVisualizer()
   }
 
   function statusJson() {
@@ -552,6 +591,8 @@ Item {
       canGoNext: p ? !!p.canGoNext : false,
       canGoPrevious: p ? !!p.canGoPrevious : false,
       canTogglePlaying: p ? !!p.canTogglePlaying : false,
+      visualizerBackend: root.visualizerBackend,
+      visualizerError: root.visualizerError,
       visualizerAvailable: root.visualizerAvailable,
       visualizerMonitoring: root.visualizerMonitoring,
       visualizerLive: root.visualizerLive,

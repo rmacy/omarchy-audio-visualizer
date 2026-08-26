@@ -1,8 +1,8 @@
 # Spotify Player
 
 A now-playing media chip for the [Omarchy](https://omarchy.org) bar, with
-playback controls, a live audio waveform, a track popup, and multi-player
-source switching over MPRIS.
+playback controls, a live nine-band audio spectrum, a track popup, and
+multi-player source switching over MPRIS.
 
 Despite the name, the chip is a **generic MPRIS client**, not a Spotify
 integration. It is optimized for [`spotify_player`](https://github.com/aome510/spotify_player),
@@ -14,11 +14,11 @@ this chip can display it.
 
 ## Features
 
-- **Now-playing chip** in the bar: play/pause glyph, a live temporal
-  waveform while playing, and a scrolling title · artist marquee.
-- **Temporal waveform**: nine columns of recent peak levels sampled from
-  the active player's PipeWire playback stream — real signal data, not a
-  looping animation (see [Waveform](#waveform)).
+- **Now-playing chip** in the bar: play/pause glyph, a live nine-band
+  spectrum while playing, and a scrolling title · artist marquee.
+- **Live FFT spectrum**: nine low-to-high frequency bands computed by
+  Cava from the default PipeWire output — real signal data, not a
+  looping animation (see [Spectrum](#spectrum)).
 - **Quick controls from the bar** without opening anything (see
   [Controls](#controls)).
 - **Track popup** with album art, title, artist, album, and
@@ -33,6 +33,9 @@ this chip can display it.
 ## Requirements
 
 - [Omarchy](https://omarchy.org) 4.x with `omarchy-shell`.
+- [Cava](https://github.com/karlstav/cava) (0.10.x) computes the
+  spectrum from PipeWire's default output monitor. Install it with
+  `omarchy pkg add cava`.
 - Any MPRIS player. For the intended setup, install
   [`spotify_player`](https://github.com/aome510/spotify_player) (AUR:
   `spotify-player`) and log into Spotify inside it once; this plugin only
@@ -84,31 +87,32 @@ so Omarchy's stock media-key bindings (`playPause`, `next`, `previous`,
 `play`, `pause`, plus `status` and `ping`) continue to work unchanged
 while this plugin is enabled.
 
-## Waveform
+## Spectrum
 
-The chip draws a compact **temporal waveform**: nine columns holding a
-short history of the active player's audio peak level, oldest to newest.
-It reflects what the audio is actually doing right now — it is not a
-looping decoration.
+The chip draws a compact **frequency spectrum**: nine bars spanning low
+to high frequencies (60 Hz to 12 kHz), computed by a real FFT of the
+default PipeWire output mix. It reflects what the audio is actually
+doing right now — it is not a looping decoration.
 
-- **Native PipeWire peak monitor**: the service attaches one of
-  Quickshell's `PwNodePeakMonitor` objects to the PipeWire playback
-  stream that belongs to the active MPRIS player and samples its PCM
-  peak every 40 ms. This is the shell's own monitor type, so the plugin
-  adds no dependency and spawns no helper process.
-- **One monitor, every bar**: the monitor lives in the headless service,
-  and every bar instance on every monitor reads the same published
-  levels — bars never instantiate their own monitors.
+- **FFT via Cava**: the headless service runs one `cava` process driven
+  by the bundled `cava.conf` — PipeWire's default output monitor, nine
+  bands from 60 Hz to 12 kHz at 25 fps. Cava is a runtime dependency;
+  the service looks for it at `/usr/bin/cava`.
+- **One process, every bar**: the Cava process lives in the headless
+  service, and every bar instance on every monitor reads the same
+  published levels — bars never spawn their own analyzers.
+- **Runs only while playing**: the process starts when the active
+  player is actually playing and stops the moment playback pauses or
+  stops. After one second of silent output, Cava's sleep timer suspends
+  FFT work until audio returns. Unexpected exits restart after 2 seconds.
 
-Each column is the stream's recent peak level over time, shaped by a
-fast-attack / slow-release envelope (24 ms up, 110 ms down) so movement
-reads naturally. Peaks below a small gate snap to zero. Silence drains the
-short history and settles at rest; pausing or losing the matched stream
-clears it immediately. In every case, the waveform stops moving at zero.
+Because the FFT taps the default PipeWire output mix rather than one
+player's private stream, the bands show whatever is audible — with
+several players running, the spectrum reflects the whole mix, not the
+selected player alone. Silence or pause settles every band at zero.
 
-This is not an FFT and not a frequency-band display: the columns answer
-"how strong was the signal, and when", not "which frequencies it
-contained".
+Each bar's height is its band's current energy, shaped by a gentle
+`pow(level, 0.72)` curve so quiet material still reads visually.
 
 ## Uninstall
 
@@ -125,10 +129,11 @@ bar position and media-key bindings intact.
 | File                      | Purpose                                                          |
 |---------------------------|------------------------------------------------------------------|
 | `manifest.json`           | Plugin identity, entrypoints, widget metadata, replacement rules |
-| `Service.qml`             | Headless MPRIS service: player tracking, actions, `media` IPC     |
-| `BarWidget.qml`           | The bar chip, marquee, tooltip, and track/source popup            |
+| `Service.qml`             | Headless MPRIS service: players, actions, `media` IPC, Cava child |
+| `BarWidget.qml`           | The bar chip, spectrum, marquee, tooltip, and track/source popup  |
 | `MediaModel.js`           | Pure helpers shared by the service and widget                     |
-| `AudioVisualizerModel.js` | Pure peak-envelope and waveform-history math for the service      |
+| `AudioVisualizerModel.js` | Pure spectrum-frame parser and band math for the service          |
+| `cava.conf`               | Bundled Cava config: PipeWire output monitor, 9 bands, 25 fps     |
 
 ## Development
 
@@ -138,8 +143,8 @@ After editing, check the plugin still validates:
 omarchy plugin validate .
 ```
 
-The waveform's pure logic (`AudioVisualizerModel.js`) has a focused,
-dependency-free test:
+The spectrum parser's pure logic (`AudioVisualizerModel.js`) has a
+focused, dependency-free test:
 
 ```bash
 node tests/AudioVisualizerModel.test.js
