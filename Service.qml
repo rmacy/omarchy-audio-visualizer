@@ -282,8 +282,10 @@ Item {
 
     if (preferred && preferred.isPlaying) return preferred
     var streamCandidate = streamPlayer || streamProxy
-    var streamPreferred = preferred && playerHasPlaybackStream(preferred) ? preferred : null
-    return oldestPlayingPlayer(true) || oldestPlayingPlayer(false) || streamPreferred || streamCandidate || preferred || trackPlayer || trackProxy || controllablePlayer || controllableProxy || identityPlayer || identityProxy || null
+    // Invariant: any actually playing source wins; once none is, an explicit
+    // preferred player outranks generic stream/metadata fallbacks even while
+    // paused or without a live PipeWire playback stream.
+    return oldestPlayingPlayer(true) || oldestPlayingPlayer(false) || preferred || streamCandidate || trackPlayer || trackProxy || controllablePlayer || controllableProxy || identityPlayer || identityProxy || null
   }
 
   function labelFor(player) {
