@@ -1,16 +1,18 @@
-# Spotify Player
+# Audio Visualizer
 
 A now-playing media chip for the [Omarchy](https://omarchy.org) bar, with
 playback controls, a live nine-band audio spectrum, a track popup, and
 multi-player source switching over MPRIS.
 
-Despite the name, the chip is a **generic MPRIS client**, not a Spotify
-integration. It is optimized for [`spotify_player`](https://github.com/aome510/spotify_player),
-a lightweight terminal Spotify client, but any MPRIS-capable player works:
-mpv, Firefox, Chromium, Rhythmbox, Elisa, Audacious, and friends all show up
-and can be controlled. There is no Spotify-exclusive code, no login, and no
-credentials or API keys — if your desktop can show a media overlay for it,
-this chip can display it.
+The chip is a **generic MPRIS client**: any MPRIS-capable player works —
+mpv, Firefox, Chromium, Rhythmbox, Elisa, Audacious, and friends all show
+up and can be controlled. There is no login, and no credentials or API
+keys — if your desktop can show a media overlay for it, this chip can
+display it.
+
+The spectrum is computed by Cava from the default PipeWire output mix, so
+it responds to **all audio on the default output**, independent of which
+MPRIS source supplies metadata and controls.
 
 ## Features
 
@@ -36,17 +38,15 @@ this chip can display it.
 - [Cava](https://github.com/karlstav/cava) (0.10.x) computes the
   spectrum from PipeWire's default output monitor. Install it with
   `omarchy pkg add cava`.
-- Any MPRIS player. For the intended setup, install
-  [`spotify_player`](https://github.com/aome510/spotify_player) (AUR:
-  `spotify-player`) and log into Spotify inside it once; this plugin only
-  reads and controls what the player exposes over MPRIS.
+- Any MPRIS-capable player: the plugin only reads and controls what the
+  player exposes over MPRIS.
 
 ## Install
 
 From any Omarchy machine:
 
 ```bash
-omarchy plugin add https://github.com/rmacy/spotify-player.git --enable
+omarchy plugin add https://github.com/rmacy/omarchy-audio-visualizer.git --enable
 ```
 
 The chip appears in the left bar section when media is playing

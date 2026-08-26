@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
   "id": "bitr0t.spotify-menu-chip",
-  "name": "Spotify Player",
-  "version": "1.2.0",
+  "name": "Audio Visualizer",
+  "version": "1.2.1",
   "author": "Ryan Macy",
   "license": "MIT",
-  "description": "MPRIS media control service",
+  "description": "MPRIS media controls with a Cava FFT spectrum of the mixed default PipeWire output",
   "kinds": [
     "service",
     "bar-widget"
@@ -16,10 +16,10 @@
     "barWidget": "BarWidget.qml"
   },
   "barWidget": {
-    "displayName": "Spotify Player",
-    "description": "MPRIS now-playing with playback controls",
+    "displayName": "Audio Visualizer",
+    "description": "MPRIS now-playing and playback controls with a Cava FFT visualizer of the complete default PipeWire output mix",
     "category": "Media",
-    "aliases": ["spotify-player", "music-chip"],
+    "aliases": ["audio-visualizer", "spectrum", "music-chip"],
     "allowMultiple": false,
     "defaultSection": "left"
   },
