@@ -99,9 +99,14 @@ Manual alternative: clone or copy this folder to
 | Popup source list          | Switch the active player (starts the clicked source when possible; a playing source is paused) |
 | Hover chip                 | Full "title — artist" tooltip            |
 
-Play/Pause from the chip and the popup sends an explicit `Play` or
-`Pause` to the selected source, chosen from that player's current
-state rather than a blind toggle.
+Play/Pause from the chip and the popup is **state-aware**: the control
+checks the selected player's current state first, so pressing play on an
+already-playing player (or pause on an already-paused one) is a no-op —
+it never blindly toggles an already-satisfied state. When the source
+supports MPRIS toggling, the control sends a single `PlayPause` to reach
+the desired state; sources without toggle support get the dedicated
+`Play` or `Pause` call instead. Source switching runs its start/pause
+steps through the same state-aware path.
 
 ## Source selection
 

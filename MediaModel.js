@@ -28,10 +28,13 @@ function canHandleAction(player, action) {
 
 // Single executor for MPRIS playback actions. `action` must be one of
 // next/previous/play/pause; the generic playPause toggle is never accepted
-// here — callers normalize it to an explicit play or pause first. Each
-// action is guarded by the player's capabilities and falls back to
-// togglePlaying() only for players that expose no dedicated method.
-// Returns whether a player method actually ran.
+// here — callers normalize it to an explicit play or pause first. Play and
+// pause are state-aware: the desired state is a no-op when already
+// satisfied, otherwise togglePlaying() is preferred — Spotify-like players
+// advertise CanPlay/CanPause but only honor the PlayPause toggle on the
+// bus — and the dedicated method runs only when no toggle is available.
+// next/previous stay guarded by their own capabilities. Returns whether a
+// player method actually ran.
 function performPlaybackAction(player, action) {
   if (!player) return false
 
@@ -52,24 +55,26 @@ function performPlaybackAction(player, action) {
   }
 
   if (action === "play") {
-    if (player.canPlay) {
-      player.play()
+    if (player.isPlaying) return false
+    if (player.canTogglePlaying) {
+      player.togglePlaying()
       return true
     }
-    if (player.canTogglePlaying && !player.isPlaying) {
-      player.togglePlaying()
+    if (player.canPlay) {
+      player.play()
       return true
     }
     return false
   }
 
   if (action === "pause") {
-    if (player.canPause) {
-      player.pause()
+    if (!player.isPlaying) return false
+    if (player.canTogglePlaying) {
+      player.togglePlaying()
       return true
     }
-    if (player.canTogglePlaying && player.isPlaying) {
-      player.togglePlaying()
+    if (player.canPause) {
+      player.pause()
       return true
     }
     return false
