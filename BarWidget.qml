@@ -186,7 +186,6 @@ BarWidget {
         readonly property string marqueeText: root.title + (root.artist ? "  ·  " + root.artist : "")
         readonly property real textGap: Style.space(24)
         readonly property real travelDistance: labelText.implicitWidth + textGap
-        readonly property bool overflowing: labelText.implicitWidth > width
         property real scrollOffset: 0
 
         width: Math.min(root.maxLabelWidth, Math.max(Style.space(110), labelText.implicitWidth))
@@ -214,16 +213,14 @@ BarWidget {
           font.family: root.bar.fontFamily
           font.pixelSize: Style.font.body
           anchors.verticalCenter: parent.verticalCenter
-          visible: scrollClip.overflowing
         }
 
         SequentialAnimation on scrollOffset {
           id: scrollSequence
-          running: scrollClip.visible && scrollClip.overflowing && !root.popupOpen && !root.bar.vertical
+          running: scrollClip.visible && !root.popupOpen && !root.bar.vertical
           loops: Animation.Infinite
           onRunningChanged: if (!running) scrollClip.scrollOffset = 0
 
-          PauseAnimation { duration: 1200 }
           NumberAnimation {
             from: 0
             to: scrollClip.travelDistance
