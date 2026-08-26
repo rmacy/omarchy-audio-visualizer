@@ -1,9 +1,9 @@
 # Audio Visualizer
 
 A now-playing media chip for the [Omarchy](https://omarchy.org) bar, with
-playback controls, a live nine-band audio spectrum, a track popup with a
-spinning record-style album-art disk, and multi-player source switching
-over MPRIS.
+playback controls, a live nine-band audio spectrum, a spacious track popup
+with high-legibility metadata and a perfectly circular spinning album disk,
+and multi-player source switching over MPRIS.
 
 The chip is a **generic MPRIS client**: any MPRIS-capable player works —
 mpv, Firefox, Chromium, Rhythmbox, Elisa, Audacious, and friends all show
@@ -24,12 +24,15 @@ MPRIS source supplies metadata and controls.
   looping animation (see [Spectrum](#spectrum)).
 - **Quick controls from the bar** without opening anything (see
   [Controls](#controls)).
-- **Track popup** with album art, title, artist, album, and
-  previous / play-pause / next buttons. The popup shows the player's
-  real album art masked into a circular record-style disk that spins
-  only while the popup is open and the active player is playing; it
-  sits still when playback is paused, the popup is closed, or no art
-  is available.
+- **Spacious track popup**: the player's real album art fills a
+  perfectly circular, record-style disk beside high-legibility title,
+  artist, and album text sized to use the popup's width without
+  clipping. A full-width transport deck carries three equal,
+  generously sized previous / play-pause / next buttons, and the
+  multi-player source rows span the popup with larger, clearer type.
+  The disk spins only while the popup is open and the active player is
+  playing; it sits still when playback is paused, the popup is closed,
+  or no art is available.
 - **Multi-player source selection**: when several MPRIS players are
   running, the popup lists them all so you can pick which one the chip
   follows.

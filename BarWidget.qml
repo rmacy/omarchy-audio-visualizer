@@ -239,99 +239,137 @@ BarWidget {
     bar: root.bar
     owner: root
     open: root.popupOpen
-    contentWidth: popup.fittedContentWidth(Style.space(320))
+    contentWidth: popup.fittedContentWidth(Style.space(420))
     contentHeight: popup.fittedContentHeight(column.implicitHeight)
 
     Column {
       id: column
       anchors.fill: parent
-      spacing: Style.space(10)
+      spacing: Style.space(16)
 
       Row {
-        spacing: Style.space(10)
+        id: header
         width: parent.width
+        spacing: Style.space(16)
 
         BorderSurface {
           id: albumDisk
           readonly property bool artReady: albumArt.status === Image.Ready
 
-          width: Style.space(64)
-          height: Style.space(64)
+          width: Style.space(112)
+          height: width
           radius: width / 2
+          antialiasing: true
           color: Style.normalFillFor(root.bar.foreground, Color.accent)
           borderSpec: Border.controlSpec("normal", root.bar.foreground, Color.accent)
 
-          Image {
-            id: albumArt
-            anchors.fill: parent
-            anchors.margins: Style.space(2)
-            fillMode: Image.PreserveAspectCrop
-            asynchronous: true
-            source: root.activePlayer && root.activePlayer.trackArtUrl ? root.activePlayer.trackArtUrl : ""
-            visible: false
-          }
-
-          Rectangle {
-            id: albumArtMask
-            anchors.fill: albumArt
-            radius: width / 2
-            color: root.bar.foreground
-            visible: false
-            layer.enabled: true
-            layer.smooth: true
-          }
-
-          MultiEffect {
-            anchors.fill: albumArt
-            source: albumArt
-            maskEnabled: true
-            maskSource: albumArtMask
-            visible: albumDisk.artReady
-          }
-
           Item {
-            anchors.fill: albumArt
-            visible: albumDisk.artReady
+            id: recordFace
+            anchors.centerIn: parent
+            width: Style.space(104)
+            height: width
+            transformOrigin: Item.Center
 
-            Rectangle {
-              anchors.centerIn: parent
-              width: Style.space(48)
-              height: width
-              radius: width / 2
-              color: "transparent"
-              border.width: Style.normalBorderWidth
-              border.color: root.bar.foreground
-              opacity: 0.16
+            Image {
+              id: albumArt
+              anchors.fill: parent
+              fillMode: Image.PreserveAspectCrop
+              asynchronous: true
+              smooth: true
+              source: root.activePlayer && root.activePlayer.trackArtUrl ? root.activePlayer.trackArtUrl : ""
+              visible: false
             }
 
             Rectangle {
-              anchors.centerIn: parent
-              width: Style.space(36)
-              height: width
+              id: albumArtMask
+              anchors.fill: parent
               radius: width / 2
-              color: "transparent"
-              border.width: Style.normalBorderWidth
-              border.color: root.bar.foreground
-              opacity: 0.13
+              antialiasing: true
+              color: root.bar.foreground
+              visible: false
+              layer.enabled: true
+              layer.smooth: true
+              layer.samples: 4
             }
 
-            Rectangle {
-              anchors.centerIn: parent
-              width: Style.space(18)
-              height: width
-              radius: width / 2
-              color: Style.normalFillFor(root.bar.foreground, Color.accent)
-              border.width: Style.normalBorderWidth
-              border.color: Style.normalBorderFor(root.bar.foreground, Color.accent)
+            MultiEffect {
+              anchors.fill: parent
+              source: albumArt
+              maskEnabled: true
+              maskSource: albumArtMask
+              maskThresholdMin: 0.5
+              maskThresholdMax: 1.0
+              maskSpreadAtMin: 0.02
+              maskSpreadAtMax: 0.02
+              visible: albumDisk.artReady
+            }
+
+            Item {
+              anchors.fill: parent
+              visible: albumDisk.artReady
+
+              Repeater {
+                model: [88, 72, 56, 44]
+
+                Item {
+                  required property real modelData
+
+                  anchors.centerIn: parent
+                  width: Style.space(modelData)
+                  height: width
+
+                  Rectangle {
+                    anchors.fill: parent
+                    radius: width / 2
+                    antialiasing: true
+                    color: "transparent"
+                    border.width: Style.space(2)
+                    border.color: Color.popups.background
+                    opacity: 0.72
+                  }
+
+                  Rectangle {
+                    anchors.fill: parent
+                    radius: width / 2
+                    antialiasing: true
+                    color: "transparent"
+                    border.width: Style.normalBorderWidth
+                    border.color: root.bar.foreground
+                    opacity: 0.62
+                  }
+                }
+              }
 
               Rectangle {
                 anchors.centerIn: parent
-                width: Style.space(4)
+                width: Style.space(32)
                 height: width
                 radius: width / 2
-                color: root.bar.foreground
-                opacity: 0.8
+                antialiasing: true
+                color: root.mixColor(Color.popups.background, root.bar.foreground, 0.12)
+                border.width: Math.max(Style.normalBorderWidth, Style.space(2))
+                border.color: root.bar.foreground
+
+                Rectangle {
+                  anchors.centerIn: parent
+                  width: Style.space(8)
+                  height: width
+                  radius: width / 2
+                  antialiasing: true
+                  color: Color.popups.background
+                  border.width: Style.normalBorderWidth
+                  border.color: root.bar.foreground
+                }
               }
+            }
+
+            RotationAnimator {
+              target: recordFace
+              from: 0
+              to: 360
+              duration: 10000
+              loops: Animation.Infinite
+              running: root.popupOpen && root.isPlaying && albumDisk.artReady
             }
           }
 
@@ -343,28 +381,20 @@ BarWidget {
             font.family: root.bar.fontFamily
             font.pixelSize: Style.font.displayLarge
           }
-
-          RotationAnimator {
-            target: albumDisk
-            from: 0
-            to: 360
-            duration: 10000
-            loops: Animation.Infinite
-            running: root.popupOpen && root.isPlaying && albumDisk.artReady
-          }
         }
 
         Column {
-          spacing: Style.space(4)
-          width: parent.width - Style.space(74)
+          width: header.width - albumDisk.width - header.spacing
+          spacing: Style.space(6)
+          anchors.verticalCenter: parent.verticalCenter
 
           Text {
             text: root.title || "Nothing playing"
             color: root.bar.foreground
             font.family: root.bar.fontFamily
-            font.pixelSize: Style.font.subtitle
+            font.pixelSize: Style.font.heading
             font.bold: true
-            elide: Text.ElideRight
+            wrapMode: Text.Wrap
             width: parent.width
           }
 
@@ -372,8 +402,8 @@ BarWidget {
             text: root.artist
             color: Qt.darker(root.bar.foreground, 1.3)
             font.family: root.bar.fontFamily
-            font.pixelSize: Style.font.bodySmall
-            elide: Text.ElideRight
+            font.pixelSize: Style.font.subtitle
+            wrapMode: Text.Wrap
             width: parent.width
             visible: text !== ""
           }
@@ -382,8 +412,8 @@ BarWidget {
             text: root.activePlayer && root.activePlayer.trackAlbum ? root.activePlayer.trackAlbum : ""
             color: Qt.darker(root.bar.foreground, 1.6)
             font.family: root.bar.fontFamily
-            font.pixelSize: Style.font.caption
-            elide: Text.ElideRight
+            font.pixelSize: Style.font.body
+            wrapMode: Text.Wrap
             width: parent.width
             visible: text !== ""
           }
@@ -391,35 +421,48 @@ BarWidget {
       }
 
       Row {
-        anchors.horizontalCenter: parent.horizontalCenter
-        spacing: Style.space(6)
+        id: transportDeck
+        width: parent.width
+        height: Style.space(58)
+        spacing: Style.space(8)
 
         Button {
+          width: (transportDeck.width - transportDeck.spacing * 2) / 3
+          height: transportDeck.height
           iconText: "󰒮"
           foreground: root.bar.foreground
-          horizontalPadding: Style.spacing.controlPaddingX
-          verticalPadding: Style.spacing.controlPaddingY
+          horizontalPadding: 0
+          verticalPadding: 0
+          iconSize: Style.font.display
+          bordered: true
           enabled: root.activePlayer && root.activePlayer.canGoPrevious
           opacity: enabled ? 1.0 : 0.4
           onClicked: if (root.mediaService) root.mediaService.runAction("previous", false, root.mediaService.playerKey(root.activePlayer))
         }
 
         Button {
+          width: (transportDeck.width - transportDeck.spacing * 2) / 3
+          height: transportDeck.height
           iconText: root.activePlayer && root.activePlayer.isPlaying ? "󰏤" : "󰐊"
           foreground: root.bar.foreground
-          horizontalPadding: Style.spacing.panelGap
-          verticalPadding: Style.spacing.controlPaddingY
-          iconSize: Style.font.iconLarge
+          horizontalPadding: 0
+          verticalPadding: 0
+          iconSize: Style.font.display
+          bordered: true
           enabled: root.activePlayer && (root.activePlayer.canTogglePlaying || root.activePlayer.canPlay || root.activePlayer.canPause)
           opacity: enabled ? 1.0 : 0.4
           onClicked: if (root.mediaService) root.mediaService.runAction("playPause", false, root.mediaService.playerKey(root.activePlayer))
         }
 
         Button {
+          width: (transportDeck.width - transportDeck.spacing * 2) / 3
+          height: transportDeck.height
           iconText: "󰒭"
           foreground: root.bar.foreground
-          horizontalPadding: Style.spacing.controlPaddingX
-          verticalPadding: Style.spacing.controlPaddingY
+          horizontalPadding: 0
+          verticalPadding: 0
+          iconSize: Style.font.display
+          bordered: true
           enabled: root.activePlayer && root.activePlayer.canGoNext
           opacity: enabled ? 1.0 : 0.4
           onClicked: if (root.mediaService) root.mediaService.runAction("next", false, root.mediaService.playerKey(root.activePlayer))
@@ -435,7 +478,7 @@ BarWidget {
         id: sourceList
         visible: root.sourcePlayers.length > 1
         width: parent.width
-        spacing: Style.space(4)
+        spacing: Style.space(8)
 
         Repeater {
           model: root.sourcePlayers
@@ -451,7 +494,7 @@ BarWidget {
             readonly property string sourceDetail: player && player.trackArtist ? player.trackArtist : (player && player.identity ? player.identity : "")
 
             width: sourceList.width
-            height: sourceInner.implicitHeight + Style.space(10)
+            height: Math.max(Style.space(56), sourceInner.implicitHeight + Style.space(20))
             radius: Style.spacing.labelGap
             color: selected ? Style.selectedFillFor(root.bar.foreground, Color.accent) : "transparent"
             borderSpec: selected ? Border.controlSpec("normal", root.bar.foreground, Color.accent) : Border.none()
@@ -461,32 +504,33 @@ BarWidget {
               anchors.left: parent.left
               anchors.right: parent.right
               anchors.verticalCenter: parent.verticalCenter
-              anchors.leftMargin: sourceRow.borderLeft + Style.space(8)
-              anchors.rightMargin: sourceRow.borderRight + Style.space(8)
-              spacing: Style.space(8)
+              anchors.leftMargin: sourceRow.borderLeft + Style.space(12)
+              anchors.rightMargin: sourceRow.borderRight + Style.space(12)
+              spacing: Style.space(10)
 
               Text {
+                id: sourceIcon
                 text: sourceRow.player && sourceRow.player.isPlaying ? "󰏤" : "󰐊"
                 color: root.bar.foreground
                 font.family: root.bar.fontFamily
-                font.pixelSize: Style.font.body
-                width: Style.space(18)
+                font.pixelSize: Style.font.iconLarge
+                width: Style.space(24)
                 horizontalAlignment: Text.AlignHCenter
                 anchors.verticalCenter: parent.verticalCenter
               }
 
               Column {
-                width: parent.width - Style.space(26)
-                spacing: Style.space(1)
+                width: sourceInner.width - sourceIcon.width - sourceInner.spacing
+                spacing: Style.space(3)
                 anchors.verticalCenter: parent.verticalCenter
 
                 Text {
                   text: sourceRow.sourceTitle
                   color: root.bar.foreground
                   font.family: root.bar.fontFamily
-                  font.pixelSize: Style.font.bodySmall
+                  font.pixelSize: Style.font.subtitle
                   font.bold: sourceRow.selected
-                  elide: Text.ElideRight
+                  wrapMode: Text.Wrap
                   width: parent.width
                 }
 
@@ -494,8 +538,8 @@ BarWidget {
                   text: sourceRow.sourceDetail
                   color: Qt.darker(root.bar.foreground, 1.5)
                   font.family: root.bar.fontFamily
-                  font.pixelSize: Style.font.caption
-                  elide: Text.ElideRight
+                  font.pixelSize: Style.font.body
+                  wrapMode: Text.Wrap
                   width: parent.width
                   visible: text !== ""
                 }
