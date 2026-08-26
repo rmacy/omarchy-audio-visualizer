@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Effects
 import Quickshell
 import qs.Ui
 import qs.Commons
@@ -251,28 +252,105 @@ BarWidget {
         width: parent.width
 
         BorderSurface {
+          id: albumDisk
+          readonly property bool artReady: albumArt.status === Image.Ready
+
           width: Style.space(64)
           height: Style.space(64)
-          radius: Style.spacing.labelGap
+          radius: width / 2
           color: Style.normalFillFor(root.bar.foreground, Color.accent)
           borderSpec: Border.controlSpec("normal", root.bar.foreground, Color.accent)
 
           Image {
+            id: albumArt
             anchors.fill: parent
             anchors.margins: Style.space(2)
             fillMode: Image.PreserveAspectCrop
             asynchronous: true
             source: root.activePlayer && root.activePlayer.trackArtUrl ? root.activePlayer.trackArtUrl : ""
-            visible: source !== ""
+            visible: false
+          }
+
+          Rectangle {
+            id: albumArtMask
+            anchors.fill: albumArt
+            radius: width / 2
+            color: root.bar.foreground
+            visible: false
+            layer.enabled: true
+            layer.smooth: true
+          }
+
+          MultiEffect {
+            anchors.fill: albumArt
+            source: albumArt
+            maskEnabled: true
+            maskSource: albumArtMask
+            visible: albumDisk.artReady
+          }
+
+          Item {
+            anchors.fill: albumArt
+            visible: albumDisk.artReady
+
+            Rectangle {
+              anchors.centerIn: parent
+              width: Style.space(48)
+              height: width
+              radius: width / 2
+              color: "transparent"
+              border.width: Style.normalBorderWidth
+              border.color: root.bar.foreground
+              opacity: 0.16
+            }
+
+            Rectangle {
+              anchors.centerIn: parent
+              width: Style.space(36)
+              height: width
+              radius: width / 2
+              color: "transparent"
+              border.width: Style.normalBorderWidth
+              border.color: root.bar.foreground
+              opacity: 0.13
+            }
+
+            Rectangle {
+              anchors.centerIn: parent
+              width: Style.space(18)
+              height: width
+              radius: width / 2
+              color: Style.normalFillFor(root.bar.foreground, Color.accent)
+              border.width: Style.normalBorderWidth
+              border.color: Style.normalBorderFor(root.bar.foreground, Color.accent)
+
+              Rectangle {
+                anchors.centerIn: parent
+                width: Style.space(4)
+                height: width
+                radius: width / 2
+                color: root.bar.foreground
+                opacity: 0.8
+              }
+            }
           }
 
           Text {
             anchors.centerIn: parent
-            visible: !root.activePlayer || !root.activePlayer.trackArtUrl
+            visible: !albumDisk.artReady
             text: "󰝚"
             color: root.bar.foreground
             font.family: root.bar.fontFamily
             font.pixelSize: Style.font.displayLarge
+          }
+
+          RotationAnimator {
+            target: albumDisk
+            from: 0
+            to: 360
+            duration: 10000
+            loops: Animation.Infinite
+            running: root.popupOpen && root.isPlaying && albumDisk.artReady
           }
         }
 
