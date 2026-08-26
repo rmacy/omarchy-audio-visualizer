@@ -33,8 +33,28 @@ Item {
   readonly property string title: activePlayer ? (activePlayer.trackTitle || "") : ""
   readonly property string artist: activePlayer ? (activePlayer.trackArtist || "") : ""
   readonly property string album: activePlayer && activePlayer.trackAlbum ? activePlayer.trackAlbum : ""
-  readonly property string artUrl: activePlayer && activePlayer.trackArtUrl ? activePlayer.trackArtUrl : ""
   readonly property string identity: activePlayer ? (activePlayer.identity || activePlayer.desktopEntry || "") : ""
+  // Artwork pipeline: activePlayer.trackArtUrl is a remote, untrusted URL
+  // and is never exposed. A short-lived broker child fetches, decodes, and
+  // re-encodes the image into a canonical local PNG; only that verified
+  // broker-owned file URL may ever populate the public artUrl below.
+  property string artUrl: ""
+  readonly property string artworkPythonExecutable: "/usr/bin/python3"
+  readonly property string artworkHelperPath: manifest && manifest.__sourceDir ? String(manifest.__sourceDir) + "/artwork_broker.py" : ""
+  readonly property int artworkDebounceMs: 250
+  readonly property int artworkWatchdogMs: 12000
+  // Private request state: candidate is the newest raw MPRIS art URL;
+  // request/generation correlate broker answers so only a response for the
+  // current player, track, and URL can ever become artUrl.
+  readonly property string artworkCandidateUrl: activePlayer && activePlayer.trackArtUrl ? String(activePlayer.trackArtUrl) : ""
+  readonly property string activePlayerKey: activePlayer ? playerKey(activePlayer) : ""
+  readonly property string activeTrackSignature: activePlayer ? trackSignature(activePlayer) : ""
+  property string artworkError: ""
+  property var artworkRequest: null
+  property int artworkGeneration: 0
+  property bool artworkResponded: false
+  property bool artworkStopRequested: false
+  property bool artworkPendingLaunch: false
   // Spectrum state: a supervised Cava child analyzes the default PipeWire
   // output monitor and streams nine low -> high frequency bands (0-1000 raw)
   // while the active player is playing. Cava frames are the only thing that
@@ -278,6 +298,24 @@ Item {
     return MediaModel.trackSignature(player)
   }
 
+  function utf8ByteLength(value) {
+    var text = String(value || "")
+    var bytes = 0
+    for (var i = 0; i < text.length; i++) {
+      var code = text.charCodeAt(i)
+      if (code <= 0x7f) bytes += 1
+      else if (code <= 0x7ff) bytes += 2
+      else if (code >= 0xd800 && code <= 0xdbff
+          && i + 1 < text.length
+          && text.charCodeAt(i + 1) >= 0xdc00
+          && text.charCodeAt(i + 1) <= 0xdfff) {
+        bytes += 4
+        i += 1
+      } else bytes += 3
+    }
+    return bytes
+  }
+
   function showOsd(actionLabel, iconName, player) {
     if (!shell) return
     shell.summon("omarchy.osd", JSON.stringify({
@@ -469,9 +507,18 @@ Item {
   // syncPlayingOrder only depends on the set of players and each player's
   // isPlaying state: onPlayersChanged covers players appearing/disappearing,
   // and the Instantiator wires isPlayingChanged for each live player.
-  Component.onCompleted: root.syncPlayingOrder()
+  Component.onCompleted: {
+    root.syncPlayingOrder()
+    root.syncArtwork()
+  }
   onPlayersChanged: root.syncPlayingOrder()
   onVisualizerWantedChanged: root.syncVisualizer()
+  // Every player, track, or candidate-artwork transition invalidates the
+  // whole pipeline: artUrl clears immediately and any in-flight request dies.
+  onActivePlayerChanged: root.syncArtwork()
+  onArtworkCandidateUrlChanged: root.syncArtwork()
+  onActiveTrackSignatureChanged: root.syncArtwork()
+  onArtworkHelperPathChanged: root.syncArtwork()
 
   Instantiator {
     model: root.players
@@ -576,6 +623,221 @@ Item {
     else stopVisualizer()
   }
 
+  // One short-lived broker child per request. Each launch receives a single
+  // JSON request line on stdin and must answer with a single JSON line on
+  // stdout; the watchdog kills any child that outlives its deadline.
+  Process {
+    id: artworkBrokerProcess
+    command: [root.artworkPythonExecutable, "-I", "-B", root.artworkHelperPath]
+    stdinEnabled: true
+    stdout: SplitParser {
+      onRead: function(data) { root.handleArtworkLine(data) }
+    }
+    // The broker contract keeps stderr empty; drain it so the child can
+    // never block on a full pipe. Its content is never surfaced.
+    stderr: SplitParser {
+      onRead: function(data) {}
+    }
+    onStarted: {
+      if (!root.artworkRequest) {
+        root.artworkStopRequested = true
+        artworkBrokerProcess.running = false
+        return
+      }
+      var payload = JSON.stringify({
+        id: root.artworkRequest.id,
+        url: root.artworkRequest.url
+      }) + "\n"
+      if (root.utf8ByteLength(payload) > 4096) {
+        root.artworkError = "request-too-long"
+        root.artworkRequest = null
+        root.artworkStopRequested = true
+        artworkBrokerProcess.running = false
+        return
+      }
+      artworkBrokerProcess.write(payload)
+    }
+    onExited: function(exitCode, exitStatus) { root.handleArtworkBrokerExited(exitCode) }
+  }
+
+  Timer {
+    id: artworkDebounceTimer
+    interval: root.artworkDebounceMs
+    repeat: false
+    onTriggered: root.launchArtwork()
+  }
+
+  Timer {
+    id: artworkWatchdog
+    interval: root.artworkWatchdogMs
+    repeat: false
+    onTriggered: root.handleArtworkTimeout()
+  }
+
+  function syncArtwork() {
+    // Invalidate everything in flight: a bumped generation and a cleared
+    // request make any late broker answer undeliverable.
+    artworkGeneration += 1
+    artworkRequest = null
+    artworkResponded = false
+    artworkPendingLaunch = false
+    artworkDebounceTimer.stop()
+    artworkWatchdog.stop()
+    artworkStopRequested = true
+    if (artworkBrokerProcess.running) artworkBrokerProcess.running = false
+    if (root.artUrl !== "") root.artUrl = ""
+
+    if (!artworkCandidateUrl) {
+      artworkError = ""
+      return
+    }
+    if (!artworkHelperPath) {
+      artworkError = "broker-unavailable"
+      return
+    }
+    if (root.utf8ByteLength(artworkCandidateUrl) > 2048) {
+      artworkError = "url-too-long"
+      return
+    }
+    if (artworkCandidateUrl.slice(0, 8).toLowerCase() !== "https://") {
+      // The broker only ever accepts absolute HTTPS; skip the spawn for the
+      // local-file art covers many players advertise.
+      artworkError = "artwork-unsupported-scheme"
+      return
+    }
+
+    artworkPendingLaunch = true
+    artworkDebounceTimer.restart()
+  }
+
+  function launchArtwork() {
+    if (!artworkPendingLaunch) return
+    if (artworkBrokerProcess.running) return
+    if (!artworkCandidateUrl || !artworkHelperPath) return
+
+    artworkPendingLaunch = false
+    artworkError = ""
+    artworkResponded = false
+    artworkStopRequested = false
+    artworkRequest = {
+      id: artworkGeneration,
+      url: artworkCandidateUrl,
+      playerKey: root.activePlayerKey,
+      trackSignature: root.activeTrackSignature
+    }
+    artworkBrokerProcess.running = true
+    artworkWatchdog.restart()
+  }
+
+  function artworkRequestIsCurrent(request) {
+    return !!request
+      && request.id === artworkGeneration
+      && request.url === root.artworkCandidateUrl
+      && request.playerKey === root.activePlayerKey
+      && request.trackSignature === root.activeTrackSignature
+  }
+
+  function retireArtworkBroker() {
+    artworkStopRequested = true
+    if (artworkBrokerProcess.running) artworkBrokerProcess.running = false
+  }
+
+  function finishArtworkRequest() {
+    artworkWatchdog.stop()
+    artworkRequest = null
+    artworkResponded = false
+    retireArtworkBroker()
+  }
+
+  function artworkFail(code) {
+    if (root.artUrl !== "") root.artUrl = ""
+    artworkError = code
+    finishArtworkRequest()
+  }
+
+  function handleArtworkLine(line) {
+    var request = artworkRequest
+    if (!request || artworkResponded) return
+    if (!line) return
+
+    // Only the first answer line is meaningful and it must stay small.
+    if (line.length > 8192) {
+      artworkFail("broker-output")
+      return
+    }
+
+    var parsed = null
+    try {
+      parsed = JSON.parse(line)
+    } catch (err) {
+      parsed = null
+    }
+
+    if (!parsed || typeof parsed !== "object" || parsed.id !== request.id) {
+      artworkFail("broker-protocol")
+      return
+    }
+
+    artworkResponded = true
+    artworkWatchdog.stop()
+
+    if (!artworkRequestIsCurrent(request)) {
+      // An answer for a superseded player/track/url can never become artUrl.
+      artworkRequest = null
+      retireArtworkBroker()
+      return
+    }
+
+    if (parsed.ok !== true) {
+      var err = parsed.error
+      artworkFail(err && err.code ? String(err.code) : "broker-error")
+      return
+    }
+
+    var path = parsed.path
+    if (typeof path !== "string"
+        || !/^\/[A-Za-z0-9._\/-]+\.png$/.test(path)) {
+      artworkFail("broker-path")
+      return
+    }
+
+    artworkError = ""
+    root.artUrl = "file://" + path
+    artworkRequest = null
+    retireArtworkBroker()
+  }
+
+  function handleArtworkTimeout() {
+    if (!artworkRequest || artworkResponded) return
+    if (root.artUrl !== "") root.artUrl = ""
+    artworkError = "broker-timeout"
+    artworkRequest = null
+    artworkResponded = false
+    // SIGKILL (9): a wedged child must not survive its deadline.
+    artworkStopRequested = true
+    if (artworkBrokerProcess.running) artworkBrokerProcess.signal(9)
+  }
+
+  function handleArtworkBrokerExited(exitCode) {
+    artworkWatchdog.stop()
+    if (!artworkStopRequested && artworkRequest && !artworkResponded) {
+      // Give a still-queued answer line one event loop pass to land before
+      // declaring the exit a failure; capture the id so a newer request is
+      // never punished for an older child's death.
+      var awaitedId = artworkRequest.id
+      Qt.callLater(function() {
+        var req = root.artworkRequest
+        if (req && req.id === awaitedId && !root.artworkResponded)
+          root.artworkFail("broker-exit")
+      })
+    } else {
+      artworkRequest = null
+      artworkResponded = false
+      artworkStopRequested = false
+    }
+    if (artworkPendingLaunch) artworkDebounceTimer.restart()
+  }
+
   function statusJson() {
     var p = activePlayer
     return JSON.stringify({
@@ -587,7 +849,8 @@ Item {
       title: p ? (p.trackTitle || "") : "",
       artist: p ? (p.trackArtist || "") : "",
       album: p && p.trackAlbum ? p.trackAlbum : "",
-      artUrl: p && p.trackArtUrl ? p.trackArtUrl : "",
+      artUrl: root.artUrl,
+      artworkError: root.artworkError,
       canGoNext: p ? !!p.canGoNext : false,
       canGoPrevious: p ? !!p.canGoPrevious : false,
       canTogglePlaying: p ? !!p.canTogglePlaying : false,

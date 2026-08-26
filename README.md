@@ -35,6 +35,10 @@ MPRIS source supplies metadata and controls.
   The disk spins only while the popup is open and the active player is
   playing; it sits still when playback is paused, the popup is closed,
   or no art is available.
+- **Hardened album art**: remote cover art is fetched over HTTPS by a
+  short-lived broker that re-encodes it to a small local PNG before
+  display — QML never loads a remote image URL (see
+  [Album artwork](#album-artwork)).
 - **Multi-player source selection**: when several MPRIS players are
   running, the popup lists them all so you can pick which one the chip
   follows.
@@ -58,6 +62,10 @@ MPRIS source supplies metadata and controls.
 - [Cava](https://github.com/karlstav/cava) (0.10.x) computes the
   spectrum from PipeWire's default output monitor. Install it with
   `omarchy pkg add cava`.
+- [Pillow](https://python-pillow.github/) (Arch package
+  `python-pillow`) decodes and re-encodes album artwork inside the
+  broker, which runs under the system `/usr/bin/python3 -I -B`. Install
+  it with `omarchy pkg add python-pillow`.
 - Any MPRIS-capable player: the plugin only reads and controls what the
   player exposes over MPRIS.
 
@@ -134,6 +142,60 @@ selected player alone. Silence or pause settles every band at zero.
 Each bar's height is its band's current energy, shaped by a gentle
 `pow(level, 0.72)` curve so quiet material still reads visually.
 
+## Album artwork
+
+The popup's spinning disk shows album art, but the plugin never loads a
+remote URL into QML and never renders the bytes a player advertises.
+Every remote image is fetched and sanitized by a short-lived broker
+(`artwork_broker.py`, system Python + Pillow) before the widget sees
+it: QML only ever renders a broker-produced local PNG or the art-less
+placeholder. The service passes the broker one request per URL as a
+single stdin JSON line of at most 4096 bytes and reads back one bounded
+JSON result. Exact policy and limits:
+
+- **Scheme** — only absolute `https://` URLs are fetched: effective
+  port 443, no userinfo, fragment, or zone ID, and at most 2048 UTF-8
+  bytes. `file://`, `data:`, `http://`, non-public hosts, unsupported
+  media, and failed fetches all fall back to the placeholder — they
+  are never opened directly.
+- **Destination** — every DNS answer of every hop must be a globally
+  routable unicast address; private, loopback, link-local, CGNAT,
+  multicast, unspecified, reserved, and documentation ranges,
+  IPv4-mapped IPv6, and NAT64 (`64:ff9b::/96`) are rejected outright.
+  The connection is made only to a vetted numeric IP, while the
+  original hostname is kept for TLS SNI, certificate validation, and
+  the `Host` header. Proxy environment variables are ignored. This
+  broker fetch is the plugin's only outbound network traffic.
+- **Redirects** — at most 3, each hop revalidated under the same rules;
+  redirect loops, downgrades to `http://`, and non-443 targets are
+  rejected.
+- **Response** — HTTP 200 only, identity encoding only, and a declared
+  `image/png` or `image/jpeg` that matches the actual payload. The body
+  is streamed with a hard cap of **2 MiB encoded bytes**; the reader
+  always attempts one byte past the cap so oversized responses are
+  rejected, never silently truncated. The exchange runs under a 10 s
+  total deadline (3 s per connect/read slice), and the QML helper waits
+  at most 12 s.
+- **Decode and re-encode** — Pillow decodes inside the short-lived
+  broker process: animated or malformed files are rejected, as are
+  images over **2048 px** on either side or **4,194,304 px** in total.
+  The image is then verified and re-loaded, EXIF-transposed, converted
+  to RGB/RGBA, thumbnailed to at most **512×512**, and re-encoded as a
+  metadata-free canonical PNG — the only image data the plugin renders.
+- **Local publication** — the canonical PNG is content-addressed and
+  published atomically with `0600` permissions into a `0700`,
+  symlink-resistant spool at
+  `$XDG_RUNTIME_DIR/omarchy-audio-visualizer/artwork`, which lives on
+  the session's tmpfs and disappears with the session.
+- **Cache and races** — the spool is capped at **16 files / 16 MiB**.
+  Results that arrive after the generation, player, or track has moved
+  on are discarded, and art clears the moment the source changes. The
+  service only ever publishes a verified `file://` URL — or nothing —
+  and the bar widget's `Image.source` consumes that alone.
+- **No self-installation** — the broker is spawned as
+  `/usr/bin/python3 -I -B artwork_broker.py`; it never invokes a
+  package manager, `pip`, a shell, or `curl`, and installs nothing.
+
 ## Uninstall
 
 ```bash
@@ -149,11 +211,13 @@ bar position and media-key bindings intact.
 | File                      | Purpose                                                          |
 |---------------------------|------------------------------------------------------------------|
 | `manifest.json`           | Plugin identity, entrypoints, widget metadata, replacement rules |
-| `Service.qml`             | Headless MPRIS service: players, actions, `media` IPC, Cava child |
+| `Service.qml`             | Headless MPRIS service: players, actions, `media` IPC, Cava + artwork broker children |
 | `BarWidget.qml`           | The bar chip, spectrum, marquee, tooltip, and track/source popup  |
 | `MediaModel.js`           | Pure helpers shared by the service and widget                     |
 | `AudioVisualizerModel.js` | Pure spectrum-frame parser and band math for the service          |
 | `cava.conf`               | Bundled Cava config: PipeWire output monitor, 9 bands, 25 fps     |
+| `artwork_broker.py`       | Short-lived HTTPS artwork broker: fetch, decode, re-encode, spool |
+| `pyproject.toml` + `poetry.lock` | Poetry development metadata for the broker's Python tests |
 
 ## Development
 
@@ -168,6 +232,15 @@ focused, dependency-free test:
 
 ```bash
 node tests/AudioVisualizerModel.test.js
+```
+
+The artwork broker has a focused Python test suite. Development
+metadata is Poetry-based (`poetry install` once); at runtime the service
+just runs the system `/usr/bin/python3 -I -B` against Arch's
+`python-pillow`, with no virtual environment:
+
+```bash
+poetry run python -m unittest tests/test_artwork_broker.py
 ```
 
 Reload live with `omarchy-shell shell rescanPlugins`.

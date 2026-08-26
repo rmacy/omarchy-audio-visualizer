@@ -276,7 +276,9 @@ BarWidget {
               fillMode: Image.PreserveAspectCrop
               asynchronous: true
               smooth: true
-              source: root.activePlayer && root.activePlayer.trackArtUrl ? root.activePlayer.trackArtUrl : ""
+              source: root.mediaService ? root.mediaService.artUrl : ""
+              sourceSize.width: recordFace.width
+              sourceSize.height: recordFace.height
               visible: false
             }
 

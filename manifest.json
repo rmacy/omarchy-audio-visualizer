@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "bitr0t.spotify-menu-chip",
   "name": "Audio Visualizer",
-  "version": "1.4.1",
+  "version": "1.5.0",
   "author": "Ryan Macy",
   "license": "MIT",
   "description": "MPRIS media controls with a Cava FFT spectrum of the mixed default PipeWire output",

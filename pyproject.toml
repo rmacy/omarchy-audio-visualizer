@@ -1,0 +1,11 @@
+[tool.poetry]
+name = "omarchy-audio-visualizer-artwork-broker"
+version = "1.5.0"
+description = "Short-lived artwork broker for the omarchy Audio Visualizer plugin: pinned-HTTPS fetch, Pillow decode to a canonical PNG, and content-addressed publication into a private runtime spool"
+authors = ["Ryan Macy"]
+license = "MIT"
+package-mode = false
+
+[tool.poetry.dependencies]
+python = ">=3.11,<4.0"
+pillow = ">=12.3,<13"
