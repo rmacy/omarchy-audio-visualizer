@@ -62,7 +62,7 @@ function parseSpectrumFrame(line, count, maxRange) {
   var sum = 0
   for (var i = 0; i < n; i++) {
     var token = tokens[i]
-    if (!BAND_PATTERN.test(token)) return null
+    if (token.trim() !== token || !BAND_PATTERN.test(token)) return null
     var raw = Number(token)
     if (!isFinite(raw) || raw < 0) return null
     var normalized = Math.min(1, raw / range)

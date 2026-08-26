@@ -174,6 +174,28 @@ function sourceHandoffConfirmed(pending, player) {
     && playerKey(player) === pending.toKey
 }
 
+// Pure decisions for the Service's pending handoff lifecycle. Keeping these
+// transitions here makes player removal, timeout, confirmation, and repeated
+// selection behavior deterministic and exhaustively testable.
+function sourceHandoffResolution(pending, target, outgoing, event) {
+  if (!pending) return "none"
+  if (target && sourceHandoffConfirmed(pending, target)) return "confirm"
+
+  if (event === "timeout") return "rollback"
+  if (event === "playersChanged") {
+    if (!target) return "rollback"
+    if (!outgoing) return "clear"
+    return "wait"
+  }
+  if (event === "playingChanged") return "wait"
+  return "none"
+}
+
+function sourceHandoffSupersession(pending, targetKey) {
+  if (!pending) return "none"
+  return pending.toKey === targetKey ? "same" : "replace"
+}
+
 function nodeProps(node) {
   return node && node.ready && node.properties ? node.properties : {}
 }
@@ -294,6 +316,8 @@ if (typeof module !== "undefined") {
     compareSourcePlayers: compareSourcePlayers,
     sourceHandoffPlan: sourceHandoffPlan,
     sourceHandoffConfirmed: sourceHandoffConfirmed,
+    sourceHandoffResolution: sourceHandoffResolution,
+    sourceHandoffSupersession: sourceHandoffSupersession,
     nodeProps: nodeProps,
     isPlaybackStream: isPlaybackStream,
     streamLabelKey: streamLabelKey,

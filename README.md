@@ -261,35 +261,56 @@ bar position and media-key bindings intact.
 | `BarWidget.qml`           | The bar chip, spectrum, marquee, tooltip, and track/source popup  |
 | `MediaModel.js`           | Pure helpers shared by the service and widget                     |
 | `AudioVisualizerModel.js` | Pure spectrum-frame parser and band math for the service          |
-| `cava.conf`               | Bundled Cava config: PipeWire output monitor, 9 bands, 25 fps     |
+| `tests/*.test.js`         | Exhaustive media, source, handoff, action, and spectrum matrices  |
+| `cava.conf`               | Bundled Cava config: PipeWire output monitor, 9 bands, 60 fps     |
 | `artwork_broker.py`       | Short-lived HTTPS artwork broker: fetch, decode, re-encode, spool |
 | `pyproject.toml` + `poetry.lock` | Poetry development metadata for the broker's Python tests |
 
 ## Development
 
-After editing, check the plugin still validates:
+Run the complete dependency-free JavaScript suite:
 
 ```bash
-omarchy plugin validate .
+node --test tests/*.test.js
 ```
 
-The spectrum parser's pure logic (`AudioVisualizerModel.js`) has a
-focused, dependency-free test:
+The registered scenario matrices cover:
+
+- spectrum parsing, normalization, silence floors, summaries, malformed
+  frames, delimiters, counts, ranges, and numeric boundaries;
+- metadata, identity, proxy, capability, action, and PipeWire truth tables;
+- source visibility, eligibility, stable ordering, and stream matching;
+- one-click handoff planning, confirmation, timeout, player removal,
+  supersession, rollback, and optimistic in-flight states;
+- exact Play/Pause/Next/Previous dispatch, toggle-first precedence,
+  dedicated fallbacks, no-op guards, and stale-property rapid actions.
+
+For focused work, the original compact suite remains directly runnable:
 
 ```bash
 node tests/AudioVisualizerModel.test.js
 ```
 
-The artwork broker has a focused Python test suite. Development
+The artwork broker has a focused Python security suite. Development
 metadata is Poetry-based (`poetry install` once); at runtime the service
-just runs the system `/usr/bin/python3 -I -B` against Arch's
+just runs system `/usr/bin/python3 -I -B` against Arch's
 `python-pillow`, with no virtual environment:
 
 ```bash
 poetry run python -m unittest tests/test_artwork_broker.py
 ```
 
-Reload live with `omarchy-shell shell rescanPlugins`.
+Validate the complete plugin manifest and layout:
+
+```bash
+omarchy plugin validate .
+```
+
+Pure tests prove deterministic policy and math, not rendered pixels or an
+external player's MPRIS compliance. QML changes still require a clean live
+shell load, and media integration changes require a real or controlled
+MPRIS handoff smoke test. Reload with
+`omarchy-shell shell rescanPlugins`.
 
 ## License
 

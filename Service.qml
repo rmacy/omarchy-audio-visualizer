@@ -487,13 +487,17 @@ Item {
     if (!handoff) return
 
     var target = playerForKey(handoff.toKey)
-    if (target && target.isPlaying) {
+    var outgoing = playerForKey(handoff.fromKey)
+    var resolution = MediaModel.sourceHandoffResolution(
+      handoff, target, outgoing, "timeout")
+    if (resolution === "confirm") {
       confirmSourceHandoff(target)
       return
     }
-
-    clearSourceHandoff()
-    rollbackSourceHandoff(handoff)
+    if (resolution === "rollback") {
+      clearSourceHandoff()
+      rollbackSourceHandoff(handoff)
+    }
   }
 
   function reconcileSourceHandoff() {
@@ -501,16 +505,19 @@ Item {
     if (!handoff) return
 
     var target = playerForKey(handoff.toKey)
-    if (!target) {
+    var outgoing = playerForKey(handoff.fromKey)
+    var resolution = MediaModel.sourceHandoffResolution(
+      handoff, target, outgoing, "playersChanged")
+    if (resolution === "confirm") {
+      confirmSourceHandoff(target)
+    } else if (resolution === "rollback") {
       clearSourceHandoff()
       rollbackSourceHandoff(handoff)
-      return
+    } else if (resolution === "clear") {
+      // The target's already-issued Play may finish, but no outgoing player
+      // remains to pause after confirmation.
+      clearSourceHandoff()
     }
-    if (confirmSourceHandoff(target)) return
-
-    // With no outgoing source left there is nothing to defer; the target's
-    // already-issued play request may finish on its own.
-    if (!playerForKey(handoff.fromKey)) clearSourceHandoff()
   }
 
   function currentSourceForHandoff(targetKey) {
@@ -542,10 +549,10 @@ Item {
       ? playerForKey(previous.fromKey)
       : currentSourceForHandoff(targetKey)
 
-    if (previous) {
-      if (previous.toKey === targetKey) return true
-      cancelSourceHandoff(true, false)
-    }
+    var supersession = MediaModel.sourceHandoffSupersession(
+      previous, targetKey)
+    if (supersession === "same") return true
+    if (supersession === "replace") cancelSourceHandoff(true, false)
 
     preferredPlayerKey = targetKey
     if (!transferPlayback) return true
