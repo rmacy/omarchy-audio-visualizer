@@ -462,16 +462,21 @@ BarWidget {
             required property var modelData
 
             readonly property var player: modelData
+            readonly property bool selectable: !!(player && root.mediaService
+              && root.mediaService.sourceIsSelectable(player))
             readonly property bool selected: root.activePlayer && player
               && root.mediaService.playerKey(root.activePlayer) === root.mediaService.playerKey(player)
             readonly property string sourceTitle: player ? (player.trackTitle || player.identity || player.desktopEntry || "Media source") : "Media source"
-            readonly property string sourceDetail: player && player.trackArtist ? player.trackArtist : (player && player.identity ? player.identity : "")
+            readonly property string sourceDetail: !selectable
+              ? "Unavailable — start media in app"
+              : (player && player.trackArtist ? player.trackArtist : (player && player.identity ? player.identity : ""))
 
             width: sourceList.width
             height: Math.max(Style.space(56), sourceInner.implicitHeight + Style.space(20))
             radius: Style.spacing.labelGap
             color: selected ? Style.selectedFillFor(root.bar.foreground, Color.accent) : "transparent"
             borderSpec: selected ? Border.controlSpec("normal", root.bar.foreground, Color.accent) : Border.none()
+            opacity: selectable ? 1.0 : 0.45
 
             Row {
               id: sourceInner
@@ -524,7 +529,8 @@ BarWidget {
             MouseArea {
               anchors.fill: parent
               hoverEnabled: true
-              cursorShape: Qt.PointingHandCursor
+              enabled: sourceRow.selectable
+              cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
               onClicked: if (root.mediaService) root.mediaService.selectPlayer(root.mediaService.playerKey(sourceRow.player), true)
             }
           }

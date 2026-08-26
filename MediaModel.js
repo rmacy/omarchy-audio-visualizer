@@ -12,6 +12,10 @@ function hasTrackMetadata(player) {
   return !!(player && (player.trackTitle || player.trackArtist || player.trackAlbum || player.trackArtUrl))
 }
 
+function hasTrackIdentity(player) {
+  return !!(player && (player.trackTitle || player.trackArtist || player.trackAlbum))
+}
+
 function playerCanControl(player) {
   return !!(player && (player.canTogglePlaying || player.canPlay || player.canPause || player.canGoNext || player.canGoPrevious))
 }
@@ -112,8 +116,20 @@ function sourceIsSelectable(player, playingState) {
   return playing || canHandleAction(player, "play")
 }
 
-function canCycleSource(player) {
-  return sourceIsSelectable(player)
+function sourceIsVisible(player, playingState) {
+  return hasTrackIdentity(player) || sourceIsSelectable(player, playingState)
+}
+
+function compareSourcePlayers(a, b) {
+  var aProxy = isProxyPlayer(a)
+  var bProxy = isProxyPlayer(b)
+  if (aProxy !== bProxy) return aProxy ? 1 : -1
+
+  var aLabel = String(playerAppLabel(a) || "").toLowerCase()
+  var bLabel = String(playerAppLabel(b) || "").toLowerCase()
+  var labelOrder = aLabel.localeCompare(bLabel)
+  if (labelOrder !== 0) return labelOrder
+  return playerKey(a).localeCompare(playerKey(b))
 }
 
 // Plans a source-row click without issuing player calls. A paused target is
@@ -268,12 +284,14 @@ if (typeof module !== "undefined") {
     isProxyPlayer: isProxyPlayer,
     hasMetadata: hasMetadata,
     hasTrackMetadata: hasTrackMetadata,
+    hasTrackIdentity: hasTrackIdentity,
     playerCanControl: playerCanControl,
     canHandleAction: canHandleAction,
     effectivePlaying: effectivePlaying,
     performPlaybackAction: performPlaybackAction,
-    canCycleSource: canCycleSource,
     sourceIsSelectable: sourceIsSelectable,
+    sourceIsVisible: sourceIsVisible,
+    compareSourcePlayers: compareSourcePlayers,
     sourceHandoffPlan: sourceHandoffPlan,
     sourceHandoffConfirmed: sourceHandoffConfirmed,
     nodeProps: nodeProps,

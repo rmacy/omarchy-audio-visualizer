@@ -127,9 +127,12 @@ authoritative MPRIS state reports `Playing`; only then does it receive
 Pause. A target that cannot start or disappears therefore never silences
 the working source, and the selection rolls back after two seconds.
 
-Stopped identity-only MPRIS endpoints that advertise neither Play nor
-PlayPause are not shown as sources: no valid plugin action can start them.
-Paused YouTube sessions remain listed when Chromium advertises Play.
+Rows are sorted by stable application identity, never by the current track
+or play state, so a handoff cannot move another target under the pointer.
+A meaningful track row stays in place through transient capability churn;
+while Chromium advertises neither Play nor PlayPause it is dimmed, disabled,
+and labelled unavailable. Stopped identity-only endpoints with no meaningful
+track are omitted because no valid plugin action can start them.
 
 An already-playing target transfers immediately without another Play
 call. Clicking the selected paused source starts it. A newer row click

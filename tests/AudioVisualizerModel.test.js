@@ -379,16 +379,20 @@ function mprisSource(key, isPlaying) {
   return { dbusName: "org.mpris.MediaPlayer2." + key, isPlaying: isPlaying };
 }
 
-test("MediaModel exports source eligibility, handoff planning, and confirmation", function () {
+test("MediaModel exports source visibility, ordering, planning, and confirmation", function () {
   assert.strictEqual(typeof MediaModel.sourceIsSelectable, "function",
     "sourceIsSelectable must be exported");
+  assert.strictEqual(typeof MediaModel.sourceIsVisible, "function",
+    "sourceIsVisible must be exported");
+  assert.strictEqual(typeof MediaModel.compareSourcePlayers, "function",
+    "compareSourcePlayers must be exported");
   assert.strictEqual(typeof MediaModel.sourceHandoffPlan, "function",
     "sourceHandoffPlan must be exported");
   assert.strictEqual(typeof MediaModel.sourceHandoffConfirmed, "function",
     "sourceHandoffConfirmed must be exported");
 });
 
-test("source eligibility hides stopped identity-only players that cannot start", function () {
+test("source visibility distinguishes stale, unavailable, and controllable players", function () {
   var stoppedChromium = {
     dbusName: "org.mpris.MediaPlayer2.chromium",
     identity: "Chromium",
@@ -396,8 +400,9 @@ test("source eligibility hides stopped identity-only players that cannot start",
     canPlay: false,
     canTogglePlaying: false
   };
-  assert.strictEqual(MediaModel.sourceIsSelectable(stoppedChromium), false,
-    "a stale Chromium MPRIS endpoint must not appear as a switchable row");
+  assert.strictEqual(MediaModel.sourceIsSelectable(stoppedChromium), false);
+  assert.strictEqual(MediaModel.sourceIsVisible(stoppedChromium), false,
+    "a stale identity-only endpoint must not create a source row");
 
   var pausedYoutube = {
     dbusName: "org.mpris.MediaPlayer2.chromium",
@@ -406,12 +411,45 @@ test("source eligibility hides stopped identity-only players that cannot start",
     isPlaying: false,
     canPlay: true
   };
-  assert.strictEqual(MediaModel.sourceIsSelectable(pausedYoutube), true,
+  assert.strictEqual(MediaModel.sourceIsSelectable(pausedYoutube), true);
+  assert.strictEqual(MediaModel.sourceIsVisible(pausedYoutube), true,
     "a paused YouTube session that advertises Play remains selectable");
+
+  pausedYoutube.canPlay = false;
+  assert.strictEqual(MediaModel.sourceIsSelectable(pausedYoutube), false);
+  assert.strictEqual(MediaModel.sourceIsVisible(pausedYoutube), true,
+    "a meaningful row stays put through transient capability churn");
 
   stoppedChromium.isPlaying = true;
   assert.strictEqual(MediaModel.sourceIsSelectable(stoppedChromium), true,
     "a currently playing source remains selectable regardless of CanPlay");
+});
+
+test("source ordering is stable across playback and track changes", function () {
+  var chromium = {
+    dbusName: "org.mpris.MediaPlayer2.chromium.instance1",
+    identity: "Chromium",
+    trackTitle: "Zulu",
+    isPlaying: false
+  };
+  var spotify = {
+    dbusName: "org.mpris.MediaPlayer2.spotify",
+    identity: "Spotify Player",
+    trackTitle: "Alpha",
+    isPlaying: true
+  };
+
+  var players = [spotify, chromium].sort(MediaModel.compareSourcePlayers);
+  assert.deepStrictEqual(players, [chromium, spotify],
+    "rows sort by stable app identity, never current track or play state");
+
+  chromium.trackTitle = "Alpha";
+  chromium.isPlaying = true;
+  spotify.trackTitle = "Zulu";
+  spotify.isPlaying = false;
+  players = [spotify, chromium].sort(MediaModel.compareSourcePlayers);
+  assert.deepStrictEqual(players, [chromium, spotify],
+    "track and playback changes must not move rows under the pointer");
 });
 
 test("paused target starts before the playing source may pause", function () {

@@ -120,12 +120,16 @@ Item {
     return MediaModel.canHandleAction(player, action)
   }
 
-  function canCycleSource(player) {
-    return MediaModel.canCycleSource(player)
-  }
-
   function sourceIsSelectable(player) {
     return MediaModel.sourceIsSelectable(player, isEffectivelyPlaying(player))
+  }
+
+  function sourceIsVisible(player) {
+    return MediaModel.sourceIsVisible(player, isEffectivelyPlaying(player))
+  }
+
+  function compareSourcePlayers(a, b) {
+    return MediaModel.compareSourcePlayers(a, b)
   }
 
   function nodeProps(node) {
@@ -282,20 +286,10 @@ Item {
     var list = []
     for (var i = 0; i < players.length; i++) {
       var p = players[i]
-      if (sourceIsSelectable(p) && !isBackgroundPlayer(p)) list.push(p)
+      if (sourceIsVisible(p) && !isBackgroundPlayer(p)) list.push(p)
     }
 
-    list.sort(function(a, b) {
-      var aPlaying = root.isEffectivelyPlaying(a)
-      var bPlaying = root.isEffectivelyPlaying(b)
-      if (aPlaying !== bPlaying) return aPlaying ? -1 : 1
-      if (isProxyPlayer(a) !== isProxyPlayer(b)) return isProxyPlayer(a) ? 1 : -1
-      if (aPlaying && bPlaying) {
-        var orderDelta = playerOrder(a, 1000) - playerOrder(b, 1000)
-        if (orderDelta !== 0) return orderDelta
-      }
-      return labelFor(a).localeCompare(labelFor(b))
-    })
+    list.sort(compareSourcePlayers)
 
     return list
   }
@@ -304,13 +298,10 @@ Item {
     var list = []
     for (var i = 0; i < players.length; i++) {
       var p = players[i]
-      if (canCycleSource(p) && !isBackgroundPlayer(p)) list.push(p)
+      if (sourceIsSelectable(p) && !isBackgroundPlayer(p)) list.push(p)
     }
 
-    list.sort(function(a, b) {
-      if (isProxyPlayer(a) !== isProxyPlayer(b)) return isProxyPlayer(a) ? 1 : -1
-      return labelFor(a).localeCompare(labelFor(b))
-    })
+    list.sort(compareSourcePlayers)
 
     return list
   }
