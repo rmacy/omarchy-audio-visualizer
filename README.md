@@ -15,6 +15,8 @@ The spectrum is computed by Cava from the default PipeWire output mix, so
 it responds to **all audio on the default output**, independent of which
 MPRIS source supplies metadata and controls.
 
+![Audio Visualizer chip with live spectrum and media popup](preview.png)
+
 ## Features
 
 - **Now-playing chip** in the bar: play/pause glyph, a live nine-band
@@ -39,6 +41,16 @@ MPRIS source supplies metadata and controls.
 - **Standard media keys keep working**: the service keeps Omarchy's stock
   `media` IPC target, so your existing media-key bindings and scripts need
   no changes.
+
+## Screenshots
+
+### Live spectrum chip
+
+![Audio Visualizer chip reacting to the default PipeWire output](screenshots/chip-playing.png)
+
+### Spinning album disk and media controls
+
+![Media popup with circular album art, transport controls, and source switching](screenshots/spinning-disk.png)
 
 ## Requirements
 
