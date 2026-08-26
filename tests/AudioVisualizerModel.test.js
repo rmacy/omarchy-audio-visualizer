@@ -8,6 +8,7 @@
 // Verifies the shared contract:
 //   - AudioVisualizerModel.zeroLevels / clampUnit / parseSpectrumFrame
 //   - MediaModel.playbackStreamForPlayer / playerHasPlaybackStream
+//   - MediaModel.transferPlayback (explicit source-switch handoff)
 //
 // Expected spectra are recomputed here from the documented pipeline with
 // literal constants (floor 0.008, gamma 0.72, live 0.02) so any drift in the
@@ -364,6 +365,133 @@ test("playerHasPlaybackStream delegates to playbackStreamForPlayer", function ()
     var stream = MediaModel.playbackStreamForPlayer(scenario.player, scenario.streams);
     assert.strictEqual(MediaModel.playerHasPlaybackStream(scenario.player, scenario.streams), stream !== null,
       "delegation mismatch for scenario: " + scenario.name);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// MediaModel.transferPlayback
+// ---------------------------------------------------------------------------
+
+test("MediaModel exports transferPlayback", function () {
+  assert.strictEqual(typeof MediaModel.transferPlayback, "function",
+    "transferPlayback must be exported");
+});
+
+function mprisSource(key, isPlaying) {
+  return { dbusName: "org.mpris.MediaPlayer2." + key, isPlaying: isPlaying };
+}
+
+// Every spy call is recorded as { action, player } so deepStrictEqual pins
+// the exact sequence: reversing play/pause, pausing after a failed start,
+// or acting on a refused transfer all fail loudly.
+function actionSpy(log, action, result) {
+  return function (player) {
+    log.push({ action: action, player: player });
+    return result;
+  };
+}
+
+test("transferPlayback starts a paused target before pausing current", function () {
+  var current = mprisSource("chrome", true);
+  var target = mprisSource("spotify", false);
+  var log = [];
+
+  var ran = MediaModel.transferPlayback(current, target, true,
+    actionSpy(log, "play", true), actionSpy(log, "pause", true));
+
+  assert.strictEqual(ran, true, "a completed transfer reports true");
+  assert.deepStrictEqual(log, [
+    { action: "play", player: target },
+    { action: "pause", player: current }
+  ], "play(target) must precede pause(current)");
+});
+
+test("transferPlayback skips play when the target is already playing", function () {
+  var current = mprisSource("chrome", true);
+  var target = mprisSource("spotify", true);
+  var log = [];
+
+  var ran = MediaModel.transferPlayback(current, target, true,
+    actionSpy(log, "play", true), actionSpy(log, "pause", true));
+
+  assert.strictEqual(ran, true, "an already-playing target still transfers");
+  assert.deepStrictEqual(log, [
+    { action: "pause", player: current }
+  ], "an already-playing target must never be sent play");
+});
+
+test("transferPlayback never pauses current after a failed target start", function () {
+  var current = mprisSource("chrome", true);
+  var target = mprisSource("spotify", false);
+  var log = [];
+
+  var ran = MediaModel.transferPlayback(current, target, true,
+    actionSpy(log, "play", false), actionSpy(log, "pause", true));
+
+  assert.strictEqual(ran, false, "a failed start reports false");
+  assert.deepStrictEqual(log, [
+    { action: "play", player: target }
+  ], "a target that cannot start must never silence current");
+
+  // A play callback without a truthy result is equally a failed start.
+  log = [];
+  var reluctantTarget = mprisSource("spotify", false);
+  ran = MediaModel.transferPlayback(mprisSource("chrome", true), reluctantTarget, true,
+    actionSpy(log, "play"), actionSpy(log, "pause", true));
+
+  assert.strictEqual(ran, false, "a falsy play result reports false");
+  assert.deepStrictEqual(log, [
+    { action: "play", player: reluctantTarget }
+  ], "a falsy play result must never pause current");
+});
+
+var transferRefusals = [
+  {
+    name: "transfer was not requested",
+    transfer: function (play, pause) {
+      return MediaModel.transferPlayback(mprisSource("chrome", true), mprisSource("spotify", false), false, play, pause);
+    }
+  },
+  {
+    name: "current is paused",
+    transfer: function (play, pause) {
+      return MediaModel.transferPlayback(mprisSource("chrome", false), mprisSource("spotify", false), true, play, pause);
+    }
+  },
+  {
+    name: "the target is the current player itself",
+    transfer: function (play, pause) {
+      var current = mprisSource("chrome", true);
+      return MediaModel.transferPlayback(current, current, true, play, pause);
+    }
+  },
+  {
+    name: "the target only shares the current player's key",
+    transfer: function (play, pause) {
+      return MediaModel.transferPlayback(mprisSource("chrome", true), mprisSource("chrome", false), true, play, pause);
+    }
+  },
+  {
+    name: "no current player exists",
+    transfer: function (play, pause) {
+      return MediaModel.transferPlayback(null, mprisSource("spotify", false), true, play, pause);
+    }
+  },
+  {
+    name: "no target player exists",
+    transfer: function (play, pause) {
+      return MediaModel.transferPlayback(mprisSource("chrome", true), null, true, play, pause);
+    }
+  }
+];
+
+transferRefusals.forEach(function (scenario) {
+  test("transferPlayback refuses to act when " + scenario.name, function () {
+    var log = [];
+    var ran = scenario.transfer(actionSpy(log, "play", true), actionSpy(log, "pause", true));
+
+    assert.strictEqual(ran, false, "a refused transfer reports false");
+    assert.deepStrictEqual(log, [], "a refused transfer must issue no playback actions");
   });
 });
 

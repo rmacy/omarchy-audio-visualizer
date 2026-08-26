@@ -96,7 +96,7 @@ Manual alternative: clone or copy this folder to
 | Scroll up on chip          | Previous track                           |
 | Scroll down on chip        | Next track                               |
 | Popup buttons              | Previous / play-pause / next             |
-| Popup source list          | Switch the active player (when several)  |
+| Popup source list          | Switch the active player (transfers playback from a playing source) |
 | Hover chip                 | Full "title — artist" tooltip            |
 
 ## Source selection
@@ -107,6 +107,14 @@ service's IPC: `sourceNext`, `sourcePrevious`, `sourceSwitch`, and
 `sourceSwitchPrevious` (for example,
 `omarchy-shell media sourceNext`). Playback can transfer to the newly
 selected player as part of the switch.
+
+Clicking a source row makes that player active. While another source is
+playing, the click also transfers playback: the clicked source is
+started first, and only once it is playing is the previous source
+paused — if it fails to start, the previous source keeps playing
+untouched. Clicking the already-active source, or any source while
+playback is paused, changes only which player the chip follows; no play
+or pause is issued.
 
 ## Media keys
 

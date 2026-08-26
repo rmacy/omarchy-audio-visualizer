@@ -357,10 +357,18 @@ Item {
     trackOsdTimer.restart()
   }
 
-  function selectPlayer(key) {
+  function transferPlaybackBetween(current, next, enabled) {
+    return MediaModel.transferPlayback(current, next, enabled,
+      function(target) { return root.playPlayer(target) },
+      function(target) { return root.pausePlayer(target) })
+  }
+
+  function selectPlayer(key, transferPlayback) {
     var player = playerForKey(key)
     if (!player || isBackgroundPlayer(player) || !hasMetadata(player)) return false
+    var current = activePlayer
     preferredPlayerKey = playerKey(player)
+    transferPlaybackBetween(current, player, transferPlayback)
     return true
   }
 
@@ -402,17 +410,9 @@ Item {
     index = (index + delta + list.length) % list.length
     var current = activePlayer
     var next = list[index]
-    var currentWasPlaying = current && current.isPlaying
-    var currentKey = playerKey(current)
-    var nextKey = playerKey(next)
 
-    preferredPlayerKey = nextKey
-
-    if (transferPlayback && currentWasPlaying && next && nextKey !== currentKey) {
-      var nextWasPlaying = next.isPlaying
-      var nextStarted = nextWasPlaying || playPlayer(next)
-      if (nextStarted) pausePlayer(current)
-    }
+    preferredPlayerKey = playerKey(next)
+    transferPlaybackBetween(current, next, transferPlayback)
 
     if (showFeedback !== false) Qt.callLater(function() {
       root.showOsd("Source", "media-source", next)

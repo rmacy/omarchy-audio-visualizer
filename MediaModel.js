@@ -30,6 +30,24 @@ function canCycleSource(player) {
   return !!(player && hasMetadata(player) && (player.isPlaying || player.canPlay))
 }
 
+// Transfers playback from `current` to `next` through the injected
+// playFn/pauseFn so callers share one implementation. Runs only when
+// transfer was explicitly requested, the sources differ, and current is
+// playing. A paused target is started first; current is paused only once
+// the target is already playing or started successfully, so a target that
+// cannot start never silences current playback. Returns whether the
+// transfer ran.
+function transferPlayback(current, next, enabled, playFn, pauseFn) {
+  if (!enabled || !current || !current.isPlaying) return false
+  if (!next || playerKey(next) === playerKey(current)) return false
+
+  var nextStarted = next.isPlaying || (playFn ? playFn(next) : false)
+  if (!nextStarted) return false
+
+  if (pauseFn) pauseFn(current)
+  return true
+}
+
 function nodeProps(node) {
   return node && node.ready && node.properties ? node.properties : {}
 }
@@ -136,6 +154,7 @@ if (typeof module !== "undefined") {
     playerCanControl: playerCanControl,
     canHandleAction: canHandleAction,
     canCycleSource: canCycleSource,
+    transferPlayback: transferPlayback,
     nodeProps: nodeProps,
     isPlaybackStream: isPlaybackStream,
     streamLabelKey: streamLabelKey,
