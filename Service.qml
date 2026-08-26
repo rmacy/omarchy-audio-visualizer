@@ -20,6 +20,9 @@ Item {
   // round trip. The player remains authoritative after the bounded timeout.
   property var playbackIntents: ({})
   readonly property int playbackIntentTimeoutMs: 1200
+  // Once a player's PipeWire stream has been observed, stream presence is
+  // authoritative over stale MPRIS PlaybackStatus when no command is pending.
+  property var streamPlayerStates: ({})
   // One source transfer may wait for the selected target's authoritative
   // MPRIS Playing signal before the outgoing source is paused.
   property var pendingSourceHandoff: null
@@ -27,6 +30,7 @@ Item {
 
   readonly property var players: Mpris.players ? Mpris.players.values : []
   readonly property var nodes: Pipewire.nodes ? Pipewire.nodes.values : []
+  readonly property var links: Pipewire.links ? Pipewire.links.values : []
   readonly property var playbackStreams: {
     var list = []
     for (var i = 0; i < nodes.length; i++) {
@@ -159,6 +163,17 @@ Item {
     return MediaModel.playbackStreamForPlayer(player, playbackStreams)
   }
 
+  function playerHasActivePlaybackStream(player) {
+    var stream = playbackStreamForPlayer(player)
+    if (!stream) return false
+    for (var i = 0; i < links.length; i++) {
+      var link = links[i]
+      if (link && link.source === stream && link.state === PwLinkState.Active)
+        return true
+    }
+    return false
+  }
+
   function playerKey(player) {
     return MediaModel.playerKey(player)
   }
@@ -173,7 +188,8 @@ Item {
   }
 
   function isEffectivelyPlaying(player) {
-    return MediaModel.effectivePlaying(player, playbackIntents, Date.now())
+    return MediaModel.synchronizedPlaying(
+      player, playbackIntents, streamPlayerStates, Date.now())
   }
 
   function schedulePlaybackIntentExpiry() {
@@ -221,12 +237,12 @@ Item {
     schedulePlaybackIntentExpiry()
   }
 
+  // Any authoritative MPRIS transition ends the optimistic overlay. Matching
+  // transitions acknowledge the command; contradictory transitions report an
+  // external change or rejection and must not remain masked until timeout.
   function settlePlaybackIntent(player) {
     var key = playerKey(player)
-    var intent = key ? playbackIntents[key] : null
-    if (intent && typeof intent.playing === "boolean"
-        && !!player.isPlaying === intent.playing)
-      removePlaybackIntent(key)
+    if (key && playbackIntents[key]) removePlaybackIntent(key)
   }
 
   function expirePlaybackIntents() {
@@ -247,6 +263,47 @@ Item {
 
     if (changed) playbackIntents = next
     schedulePlaybackIntentExpiry()
+  }
+
+  function playbackStateMapsEqual(a, b) {
+    for (var key in a) {
+      if (a[key] !== b[key]) return false
+    }
+    for (var other in b) {
+      if (a[other] !== b[other]) return false
+    }
+    return true
+  }
+
+  function syncPlaybackStreamStates() {
+    var now = Date.now()
+    var next = {}
+    var contradictoryIntents = []
+
+    for (var i = 0; i < players.length; i++) {
+      var player = players[i]
+      if (!player || isBackgroundPlayer(player)) continue
+      var key = playerKey(player)
+      if (!key) continue
+
+      var previous = streamPlayerStates[key]
+      var observed = playerHasPlaybackStream(player)
+      var active = observed && playerHasActivePlaybackStream(player)
+      var state = MediaModel.nextStreamPlayerState(
+        previous, active, observed)
+      if (typeof state === "boolean") next[key] = state
+
+      var intentState = MediaModel.playbackIntentState(
+        player, playbackIntents, now)
+      if (MediaModel.streamTransitionContradictsIntent(
+          previous, active, intentState))
+        contradictoryIntents.push(key)
+    }
+
+    if (!playbackStateMapsEqual(streamPlayerStates, next))
+      streamPlayerStates = next
+    for (var j = 0; j < contradictoryIntents.length; j++)
+      removePlaybackIntent(contradictoryIntents[j])
   }
 
   function playerOrder(player, fallback) {
@@ -685,17 +742,19 @@ Item {
     return handled
   }
 
-  // Recompute play order reactively instead of polling. The bus state keeps
-  // long-term ordering authoritative; playbackIntents overlays only the
-  // short MPRIS round trip used by selection and control rendering.
+  // MPRIS keeps long-term play order; observed PipeWire stream transitions
+  // override stale PlaybackStatus for rendering, selection, and visualization.
   Component.onCompleted: {
+    root.syncPlaybackStreamStates()
     root.syncPlayingOrder()
     root.syncArtwork()
   }
   onPlayersChanged: {
+    root.syncPlaybackStreamStates()
     root.syncPlayingOrder()
     root.reconcileSourceHandoff()
   }
+  onPlaybackStreamsChanged: root.syncPlaybackStreamStates()
   onVisualizerWantedChanged: root.syncVisualizer()
   // Every player, track, or candidate-artwork transition invalidates the
   // whole pipeline: artUrl clears immediately and any in-flight request dies.
@@ -711,10 +770,23 @@ Item {
       target: modelData
       function onIsPlayingChanged() {
         root.settlePlaybackIntent(modelData)
+        root.syncPlaybackStreamStates()
         root.confirmSourceHandoff(modelData)
         root.syncPlayingOrder()
       }
     }
+  }
+
+  // Quickshell's PipeWire object model does not reliably notify a derived
+  // JavaScript array when a stream node appears or disappears. A tiny guarded
+  // reconciliation loop closes that signal gap without changing state when
+  // the boolean map is unchanged.
+  Timer {
+    id: streamSyncTimer
+    interval: 50
+    repeat: true
+    running: root.players.length > 0
+    onTriggered: root.syncPlaybackStreamStates()
   }
 
   Timer {
@@ -739,6 +811,7 @@ Item {
   }
 
   PwObjectTracker { objects: root.playbackStreams }
+  PwObjectTracker { objects: root.links }
   // One-shot availability probe: `started` fires only when /usr/bin/cava
   // exists and executes; a missing binary silently flips running back to
   // false and we stay unavailable.
@@ -1071,10 +1144,21 @@ Item {
 
   function statusJson() {
     var p = activePlayer
+    var key = playerKey(p)
+    var streamState = key && typeof streamPlayerStates[key] === "boolean"
+      ? streamPlayerStates[key] : null
+    var intentState = MediaModel.playbackIntentState(
+      p, playbackIntents, Date.now())
     return JSON.stringify({
       hasPlayer: p !== null,
       hasMedia: root.hasMedia,
       playing: root.activePlaying,
+      mprisPlaying: p ? !!p.isPlaying : false,
+      playbackStreamCount: playbackStreams.length,
+      matchedPlaybackStream: p ? playerHasPlaybackStream(p) : false,
+      activePlaybackStream: p ? playerHasActivePlaybackStream(p) : false,
+      streamPlaying: streamState,
+      intentPlaying: intentState,
       identity: p ? (p.identity || "") : "",
       desktopEntry: p ? (p.desktopEntry || "") : "",
       title: p ? (p.trackTitle || "") : "",

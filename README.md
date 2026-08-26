@@ -117,6 +117,13 @@ after 2 seconds. Calls still go directly from Quickshell to MPRIS. A Rust
 subprocess or daemon would add another IPC hop, duplicate player state, and
 complicate plugin distribution without removing the MPRIS round trip.
 
+MPRIS is not trusted indefinitely for runtime state. Once a player has a
+matching PipeWire playback stream, stream appearance and removal become
+authoritative for the chip icon, active-source selection, and visualizer.
+Any MPRIS transition ends the optimistic overlay, and a contradictory
+PipeWire edge cancels it immediately. External starts and stops therefore
+cannot remain hidden behind stale `PlaybackStatus` or a prior chip action.
+
 ## Source selection
 
 With multiple players running, right-click the chip and pick a source in
@@ -280,6 +287,8 @@ The registered scenario matrices cover:
   frames, delimiters, counts, ranges, and numeric boundaries;
 - metadata, identity, proxy, capability, action, and PipeWire truth tables;
 - source visibility, eligibility, stable ordering, and stream matching;
+- MPRIS/PipeWire precedence, first-observation fallback, stream lifecycle
+  sequences, external starts/stops, and contradictory optimistic intents;
 - one-click handoff planning, confirmation, timeout, player removal,
   supersession, rollback, and optimistic in-flight states;
 - exact Play/Pause/Next/Previous dispatch, toggle-first precedence,

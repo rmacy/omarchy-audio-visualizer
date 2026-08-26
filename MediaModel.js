@@ -30,11 +30,10 @@ function canHandleAction(player, action) {
   return false
 }
 
-// Returns the playback state the UI should render while an asynchronous MPRIS
-// command settles. Intents are keyed by playerKey and expire quickly; malformed
-// or stale entries always fall back to the player's authoritative bus state.
-function effectivePlaying(player, intents, nowMs) {
-  if (!player) return false
+// Returns a valid unexpired desired state, or null when the player has no
+// authoritative pending intent.
+function playbackIntentState(player, intents, nowMs) {
+  if (!player) return null
 
   var key = playerKey(player)
   var intent = key && intents ? intents[key] : null
@@ -45,8 +44,45 @@ function effectivePlaying(player, intents, nowMs) {
       && isFinite(intent.expiresAt)
       && intent.expiresAt > now)
     return intent.playing
+  return null
+}
 
-  return !!player.isPlaying
+// Returns the MPRIS state with a short-lived command intent overlaid.
+function effectivePlaying(player, intents, nowMs) {
+  if (!player) return false
+  var intentState = playbackIntentState(player, intents, nowMs)
+  return typeof intentState === "boolean" ? intentState : !!player.isPlaying
+}
+
+// An active PipeWire link is authoritative. A matching but paused stream is
+// also authoritative when `streamObserved` is true. Before the first match,
+// null preserves the MPRIS fallback for uncorrelatable player labels.
+function nextStreamPlayerState(previousState, streamActive, streamObserved) {
+  if (streamActive) return true
+  if (streamObserved) return false
+  return typeof previousState === "boolean" ? false : null
+}
+
+function streamTransitionContradictsIntent(previousState, streamPresent,
+                                           intentState) {
+  var changed = typeof previousState === "boolean"
+    ? previousState !== streamPresent
+    : !!streamPresent
+  return changed
+    && typeof intentState === "boolean"
+    && intentState !== streamPresent
+}
+
+// Command intent wins for immediate feedback. Once no intent remains, an
+// observed PipeWire stream state wins over stale MPRIS PlaybackStatus.
+function synchronizedPlaying(player, intents, streamStates, nowMs) {
+  if (!player) return false
+  var intentState = playbackIntentState(player, intents, nowMs)
+  if (typeof intentState === "boolean") return intentState
+
+  var key = playerKey(player)
+  var streamState = key && streamStates ? streamStates[key] : undefined
+  return typeof streamState === "boolean" ? streamState : !!player.isPlaying
 }
 
 // Single executor for MPRIS playback actions. `action` must be one of
@@ -310,6 +346,10 @@ if (typeof module !== "undefined") {
     playerCanControl: playerCanControl,
     canHandleAction: canHandleAction,
     effectivePlaying: effectivePlaying,
+    playbackIntentState: playbackIntentState,
+    nextStreamPlayerState: nextStreamPlayerState,
+    streamTransitionContradictsIntent: streamTransitionContradictsIntent,
+    synchronizedPlaying: synchronizedPlaying,
     performPlaybackAction: performPlaybackAction,
     sourceIsSelectable: sourceIsSelectable,
     sourceIsVisible: sourceIsVisible,
