@@ -109,6 +109,14 @@ the desired state; sources without toggle support get the dedicated
 its one action — pausing the outgoing playing source — runs through the
 same state-aware path.
 
+Control feedback is immediate: after a successful MPRIS call, the service
+renders the requested play/pause state while it waits for the player's
+asynchronous property update. The player remains authoritative; an
+unconfirmed intent expires after 1.2 seconds. Calls still go directly from
+Quickshell to MPRIS. A Rust subprocess or daemon would add another IPC hop,
+duplicate player state, and complicate plugin distribution without removing
+the MPRIS round trip.
+
 ## Source selection
 
 With multiple players running, right-click the chip and pick a source in
@@ -144,17 +152,22 @@ doing right now — it is not a looping decoration.
 
 - **FFT via Cava**: the headless service runs one `cava` process driven
   by the bundled `cava.conf` — PipeWire's default output monitor, nine
-  bands from 60 Hz to 12 kHz at 25 fps. Cava is a runtime dependency;
+  bands from 60 Hz to 12 kHz at 60 fps. Cava is a runtime dependency;
   the service looks for it at `/usr/bin/cava`.
 - **One process, every bar**: the Cava process lives in the headless
   service, and every bar instance on every monitor reads the same
   published levels — bars never spawn their own analyzers.
-- **Runs only while playing**: the process starts when the selected
-  source is actually playing; the moment that source pauses or stops,
-  the spectrum stops and the bars clear to zero, and it resumes when
-  playback restarts. After one second of silent output, Cava's sleep
-  timer suspends FFT work until audio returns. Unexpected exits restart
-  after 2 seconds.
+- **Low-latency lifecycle**: hovering the chip or opening the popup
+  prewarms Cava. Pause clears the bars immediately but keeps that one
+  process warm for at most five seconds, covering quick resume and the
+  two-step source workflow without paying Cava's startup cost again.
+  After the window it stops completely. Cava's own sleep polling is
+  disabled only during this bounded lifetime, so active playback cannot
+  wait up to a second for the analyzer to wake.
+- **Responsive rendering**: new frames arrive every 16.7 ms, bar motion
+  settles in 16 ms, and reduced Cava temporal smoothing follows transients
+  substantially faster than the previous 25 fps / 45 ms pipeline.
+  Unexpected exits restart after 2 seconds.
 
 Because the FFT taps the default PipeWire output mix rather than one
 player's private stream, the bands show whatever is audible — with

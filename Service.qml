@@ -15,6 +15,11 @@ Item {
   property var playerStartedAt: ({})
   property var pendingTrackOsd: null
   property int playSerial: 0
+  // Short-lived desired states make controls and source selection react in
+  // the same frame as the MPRIS call instead of waiting for its property
+  // round trip. The player remains authoritative after the bounded timeout.
+  property var playbackIntents: ({})
+  readonly property int playbackIntentTimeoutMs: 1200
 
   readonly property var players: Mpris.players ? Mpris.players.values : []
   readonly property var nodes: Pipewire.nodes ? Pipewire.nodes.values : []
@@ -29,6 +34,7 @@ Item {
   readonly property var sourcePlayers: orderedSourcePlayers()
   readonly property var sourceCyclePlayers: orderedCycleSourcePlayers()
   readonly property var activePlayer: selectActivePlayer()
+  readonly property bool activePlaying: isEffectivelyPlaying(activePlayer)
   readonly property bool hasMedia: activePlayer !== null && (activePlayer.trackTitle || activePlayer.trackArtist)
   readonly property string title: activePlayer ? (activePlayer.trackTitle || "") : ""
   readonly property string artist: activePlayer ? (activePlayer.trackArtist || "") : ""
@@ -64,7 +70,7 @@ Item {
   readonly property string cavaConfigPath: manifest && manifest.__sourceDir ? String(manifest.__sourceDir) + "/cava.conf" : ""
   property bool cavaAvailable: false
   readonly property bool visualizerAvailable: cavaAvailable && cavaConfigPath !== ""
-  readonly property bool visualizerWanted: MediaModel.visualizerShouldRun(activePlayer, visualizerAvailable)
+  readonly property bool visualizerWanted: activePlaying && visualizerAvailable
   readonly property bool visualizerMonitoring: visualizerWanted && cavaProcess.running
   readonly property int visualizerLevelCount: 9
   readonly property int cavaMaxRange: 1000
@@ -75,6 +81,9 @@ Item {
   property int visualizerFrame: 0
   property string visualizerError: ""
   property bool cavaStopRequested: false
+  // Keep a just-used analyzer warm long enough for a two-step source pick or
+  // quick resume, then stop it so paused media has no unbounded FFT cost.
+  readonly property int cavaLingerMs: 5000
 
   function isProxyPlayer(player) {
     return MediaModel.isProxyPlayer(player)
@@ -150,6 +159,81 @@ Item {
     return null
   }
 
+  function isEffectivelyPlaying(player) {
+    return MediaModel.effectivePlaying(player, playbackIntents, Date.now())
+  }
+
+  function schedulePlaybackIntentExpiry() {
+    var earliest = 0
+    for (var key in playbackIntents) {
+      var intent = playbackIntents[key]
+      if (!intent || typeof intent.expiresAt !== "number" || !isFinite(intent.expiresAt)) continue
+      if (earliest === 0 || intent.expiresAt < earliest) earliest = intent.expiresAt
+    }
+
+    if (earliest === 0) {
+      playbackIntentTimer.stop()
+      return
+    }
+
+    playbackIntentTimer.interval = Math.max(1, Math.ceil(earliest - Date.now()))
+    playbackIntentTimer.restart()
+  }
+
+  function removePlaybackIntent(key) {
+    if (!key || !playbackIntents[key]) return
+
+    var next = {}
+    for (var existing in playbackIntents) {
+      if (existing !== key) next[existing] = playbackIntents[existing]
+    }
+    playbackIntents = next
+    schedulePlaybackIntentExpiry()
+  }
+
+  function recordPlaybackIntent(player, playing) {
+    var key = playerKey(player)
+    if (!key) return
+
+    var next = {}
+    for (var existing in playbackIntents)
+      next[existing] = playbackIntents[existing]
+    next[key] = {
+      playing: !!playing,
+      expiresAt: Date.now() + playbackIntentTimeoutMs
+    }
+    playbackIntents = next
+    schedulePlaybackIntentExpiry()
+  }
+
+  function settlePlaybackIntent(player) {
+    var key = playerKey(player)
+    var intent = key ? playbackIntents[key] : null
+    if (intent && typeof intent.playing === "boolean"
+        && !!player.isPlaying === intent.playing)
+      removePlaybackIntent(key)
+  }
+
+  function expirePlaybackIntents() {
+    var now = Date.now()
+    var next = {}
+    var changed = false
+    for (var key in playbackIntents) {
+      var intent = playbackIntents[key]
+      if (!intent || typeof intent.playing !== "boolean"
+          || typeof intent.expiresAt !== "number"
+          || !isFinite(intent.expiresAt)
+          || intent.expiresAt <= now) {
+        changed = true
+        continue
+      }
+      next[key] = intent
+    }
+
+    if (changed) playbackIntents = next
+    schedulePlaybackIntentExpiry()
+  }
+
   function playerOrder(player, fallback) {
     var key = playerKey(player)
     var value = key ? playerStartedAt[key] : undefined
@@ -191,9 +275,11 @@ Item {
     }
 
     list.sort(function(a, b) {
-      if (!!a.isPlaying !== !!b.isPlaying) return a.isPlaying ? -1 : 1
+      var aPlaying = root.isEffectivelyPlaying(a)
+      var bPlaying = root.isEffectivelyPlaying(b)
+      if (aPlaying !== bPlaying) return aPlaying ? -1 : 1
       if (isProxyPlayer(a) !== isProxyPlayer(b)) return isProxyPlayer(a) ? 1 : -1
-      if (a.isPlaying && b.isPlaying) {
+      if (aPlaying && bPlaying) {
         var orderDelta = playerOrder(a, 1000) - playerOrder(b, 1000)
         if (orderDelta !== 0) return orderDelta
       }
@@ -229,7 +315,7 @@ Item {
       if (!p || isBackgroundPlayer(p)) continue
 
       var proxyPlayer = isProxyPlayer(p)
-      if (p.isPlaying) {
+      if (isEffectivelyPlaying(p)) {
         if (requirePlaybackStream && !playerHasPlaybackStream(p)) continue
 
         var order = playerOrder(p, i + 1000)
@@ -280,11 +366,11 @@ Item {
       }
     }
 
-    if (preferred && preferred.isPlaying) return preferred
+    if (preferred && isEffectivelyPlaying(preferred)) return preferred
     var streamCandidate = streamPlayer || streamProxy
-    // Invariant: any actually playing source wins; once none is, an explicit
-    // preferred player outranks generic stream/metadata fallbacks even while
-    // paused or without a live PipeWire playback stream.
+    // Invariant: any effectively playing source wins; once none is, an
+    // explicit preferred player outranks generic stream/metadata fallbacks
+    // even while paused or without a live PipeWire playback stream.
     return oldestPlayingPlayer(true) || oldestPlayingPlayer(false) || preferred || streamCandidate || trackPlayer || trackProxy || controllablePlayer || controllableProxy || identityPlayer || identityProxy || null
   }
 
@@ -371,7 +457,8 @@ Item {
   // switchSource) keeps its safe auto-transfer policy unchanged.
   function commitSourceSelectionBetween(current, next, enabled) {
     return MediaModel.commitSourceSelection(current, next, enabled,
-      function(target) { return root.pausePlayer(target) })
+      function(target) { return root.pausePlayer(target) },
+      isEffectivelyPlaying(current))
   }
 
 
@@ -384,15 +471,23 @@ Item {
     return true
   }
 
-  // Thin injection points for transfer/commit; the real logic lives in
-  // MediaModel.performPlaybackAction so every play/pause in the service
-  // shares one capability-guarded implementation.
+  // All callers share the same optimistic state overlay. MPRIS remains the
+  // authority, but the UI and rapid follow-up clicks do not wait for its
+  // asynchronous PropertiesChanged signal.
+  function performPlayerAction(player, action) {
+    var handled = MediaModel.performPlaybackAction(
+      player, action, isEffectivelyPlaying(player))
+    if (handled && (action === "play" || action === "pause"))
+      recordPlaybackIntent(player, action === "play")
+    return handled
+  }
+
   function playPlayer(player) {
-    return MediaModel.performPlaybackAction(player, "play")
+    return performPlayerAction(player, "play")
   }
 
   function pausePlayer(player) {
-    return MediaModel.performPlaybackAction(player, "pause")
+    return performPlayerAction(player, "pause")
   }
 
   function switchSource(delta, transferPlayback, showFeedback) {
@@ -447,9 +542,9 @@ Item {
     var actionLabel = "Play/pause"
     var iconName = "media"
     var beforeTrackSignature = trackSignature(player)
-    // playPause is normalized here to an explicit play or pause for the
-    // selected player; every action then runs through the single
-    // performPlaybackAction implementation in MediaModel.
+    // playPause is normalized here to an explicit play or pause using the
+    // optimistic selected-player state; every action then runs through the
+    // single performPlayerAction implementation above.
     var effective = action
 
     if (action === "next") {
@@ -465,12 +560,12 @@ Item {
       actionLabel = "Pause"
       iconName = "media-pause"
     } else if (action === "playPause") {
-      effective = player && player.isPlaying ? "pause" : "play"
+      effective = player && isEffectivelyPlaying(player) ? "pause" : "play"
       actionLabel = effective === "pause" ? "Pause" : "Play"
       iconName = effective === "pause" ? "media-pause" : "media-play"
     }
 
-    var handled = MediaModel.performPlaybackAction(player, effective)
+    var handled = performPlayerAction(player, effective)
 
     if (handled && key) preferredPlayerKey = key
     if (showFeedback !== false)
@@ -478,10 +573,9 @@ Item {
     return handled
   }
 
-  // Recompute play-order reactively instead of polling every 500ms.
-  // syncPlayingOrder only depends on the set of players and each player's
-  // isPlaying state: onPlayersChanged covers players appearing/disappearing,
-  // and the Instantiator wires isPlayingChanged for each live player.
+  // Recompute play order reactively instead of polling. The bus state keeps
+  // long-term ordering authoritative; playbackIntents overlays only the
+  // short MPRIS round trip used by selection and control rendering.
   Component.onCompleted: {
     root.syncPlayingOrder()
     root.syncArtwork()
@@ -500,8 +594,18 @@ Item {
     delegate: Connections {
       required property var modelData
       target: modelData
-      function onIsPlayingChanged() { root.syncPlayingOrder() }
+      function onIsPlayingChanged() {
+        root.settlePlaybackIntent(modelData)
+        root.syncPlayingOrder()
+      }
     }
+  }
+
+  Timer {
+    id: playbackIntentTimer
+    interval: root.playbackIntentTimeoutMs
+    repeat: false
+    onTriggered: root.expirePlaybackIntents()
   }
 
   Timer {
@@ -526,8 +630,8 @@ Item {
     }
   }
 
-  // The single analyzer process, one per service. Any exit that was not
-  // requested by stopVisualizer while media is still playing is unexpected.
+  // The single analyzer process, one per service. It may stay warm for the
+  // bounded linger window; every requested exit goes through stopVisualizerNow.
   Process {
     id: cavaProcess
     command: [root.cavaExecutable, "-p", root.cavaConfigPath]
@@ -549,6 +653,13 @@ Item {
     onTriggered: if (root.visualizerWanted) root.startVisualizer()
   }
 
+  Timer {
+    id: cavaLingerTimer
+    interval: root.cavaLingerMs
+    repeat: false
+    onTriggered: root.stopVisualizerNow()
+  }
+
   function resetVisualizer() {
     visualizerPeak = 0
     visualizerEnergy = 0
@@ -567,19 +678,35 @@ Item {
     visualizerFrame += 1
   }
 
-  function startVisualizer() {
-    if (!visualizerWanted || cavaProcess.running) return
+  function startVisualizer(force) {
+    if ((!visualizerWanted && !force) || cavaProcess.running) return
     if (!cavaConfigPath) {
       visualizerError = "cannot locate cava.conf (plugin source dir unknown)"
       return
     }
+    if (!cavaAvailable) return
     visualizerError = ""
     cavaStopRequested = false
     cavaProcess.running = true
   }
 
-  function stopVisualizer() {
+  // Hover and popup-open prewarm the analyzer startup before the user presses
+  // Play. If playback never starts, the same bounded linger timer tears it
+  // down.
+  function primeVisualizer() {
+    if (!visualizerAvailable) return
+    if (visualizerWanted) {
+      cavaLingerTimer.stop()
+      startVisualizer(false)
+      return
+    }
+    cavaLingerTimer.restart()
+    startVisualizer(true)
+  }
+
+  function stopVisualizerNow() {
     cavaRestartTimer.stop()
+    cavaLingerTimer.stop()
     cavaStopRequested = true
     if (cavaProcess.running) cavaProcess.running = false
     visualizerError = ""
@@ -594,8 +721,14 @@ Item {
   }
 
   function syncVisualizer() {
-    if (visualizerWanted) startVisualizer()
-    else stopVisualizer()
+    if (visualizerWanted) {
+      cavaLingerTimer.stop()
+      startVisualizer(false)
+      return
+    }
+
+    resetVisualizer()
+    if (cavaProcess.running) cavaLingerTimer.restart()
   }
 
   // One short-lived broker child per request. Each launch receives a single
@@ -818,7 +951,7 @@ Item {
     return JSON.stringify({
       hasPlayer: p !== null,
       hasMedia: root.hasMedia,
-      playing: p ? !!p.isPlaying : false,
+      playing: root.activePlaying,
       identity: p ? (p.identity || "") : "",
       desktopEntry: p ? (p.desktopEntry || "") : "",
       title: p ? (p.trackTitle || "") : "",

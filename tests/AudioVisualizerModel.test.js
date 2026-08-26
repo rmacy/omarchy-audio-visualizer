@@ -536,6 +536,20 @@ test("commitSourceSelection pauses current even when the target is already playi
   ], "no target is ever sent play, not even an already-playing one");
 });
 
+test("commitSourceSelection pauses an optimistically playing current before MPRIS settles", function () {
+  var current = mprisSource("chrome", false);
+  var target = mprisSource("spotify", false);
+  var log = [];
+
+  var paused = MediaModel.commitSourceSelection(current, target, true,
+    actionSpy(log, "pause", true), true);
+
+  assert.strictEqual(paused, true,
+    "the short-lived effective state must satisfy the playing guard");
+  assert.deepStrictEqual(log, [{ action: "pause", player: current }],
+    "a rapid source pick must not leave an in-flight Play unopposed");
+});
+
 test("commitSourceSelection reports false when the pause method fails", function () {
   var current = mprisSource("chrome", true);
   var target = mprisSource("spotify", false);
@@ -619,9 +633,11 @@ commitRefusals.forEach(function (scenario) {
 // MediaModel.performPlaybackAction
 // ---------------------------------------------------------------------------
 
-test("MediaModel exports performPlaybackAction and visualizerShouldRun", function () {
+test("MediaModel exports playback actions, optimistic state, and visualizer policy", function () {
   assert.strictEqual(typeof MediaModel.performPlaybackAction, "function",
     "performPlaybackAction must be exported");
+  assert.strictEqual(typeof MediaModel.effectivePlaying, "function",
+    "effectivePlaying must be exported");
   assert.strictEqual(typeof MediaModel.visualizerShouldRun, "function",
     "visualizerShouldRun must be exported");
 });
@@ -666,6 +682,54 @@ function spyPlayer(log, key, capabilities) {
   };
   return player;
 }
+
+test("effectivePlaying uses a valid unexpired intent, then returns to MPRIS state", function () {
+  var player = {
+    dbusName: "org.mpris.MediaPlayer2.spotify",
+    isPlaying: false
+  };
+  var key = MediaModel.playerKey(player);
+  var intents = {};
+  intents[key] = { playing: true, expiresAt: 1200 };
+
+  assert.strictEqual(MediaModel.effectivePlaying(player, intents, 1000), true,
+    "an unexpired play intent must render immediately");
+  assert.strictEqual(MediaModel.effectivePlaying(player, intents, 1200), false,
+    "an intent expires at its deadline and the bus state becomes authoritative");
+
+  player.isPlaying = true;
+  intents[key] = { playing: "yes", expiresAt: 1300 };
+  assert.strictEqual(MediaModel.effectivePlaying(player, intents, 1000), true,
+    "a malformed desired state must fall back to the player's actual state");
+  intents[key] = { playing: false, expiresAt: Infinity };
+  assert.strictEqual(MediaModel.effectivePlaying(player, intents, 1000), true,
+    "a non-finite deadline must fall back to the player's actual state");
+  assert.strictEqual(MediaModel.effectivePlaying(null, intents, 1000), false,
+    "a missing player is never effectively playing");
+});
+
+test("effective state lets rapid play then pause outrun stale MPRIS properties", function () {
+  var log = [];
+  var player = {
+    dbusName: "org.mpris.MediaPlayer2.spotify",
+    isPlaying: false,
+    canTogglePlaying: true,
+    togglePlaying: function () {
+      log.push("toggle");
+      // Deliberately do not mutate isPlaying: this models the interval before
+      // Quickshell receives MPRIS PropertiesChanged.
+    }
+  };
+
+  assert.strictEqual(MediaModel.performPlaybackAction(player, "play", false), true,
+    "the first click sends PlayPause from the effective paused state");
+  assert.strictEqual(MediaModel.performPlaybackAction(player, "pause", true), true,
+    "the second click sends PlayPause from the optimistic playing state");
+  assert.deepStrictEqual(log, ["toggle", "toggle"],
+    "rapid opposite clicks must not be dropped while the bus property is stale");
+  assert.strictEqual(player.isPlaying, false,
+    "the test keeps the authoritative property stale throughout");
+});
 
 test("performPlaybackAction runs next only behind canGoNext", function () {
   var log = [];

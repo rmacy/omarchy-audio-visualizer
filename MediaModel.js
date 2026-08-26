@@ -26,6 +26,25 @@ function canHandleAction(player, action) {
   return false
 }
 
+// Returns the playback state the UI should render while an asynchronous MPRIS
+// command settles. Intents are keyed by playerKey and expire quickly; malformed
+// or stale entries always fall back to the player's authoritative bus state.
+function effectivePlaying(player, intents, nowMs) {
+  if (!player) return false
+
+  var key = playerKey(player)
+  var intent = key && intents ? intents[key] : null
+  var now = typeof nowMs === "number" && isFinite(nowMs) ? nowMs : Date.now()
+  if (intent
+      && typeof intent.playing === "boolean"
+      && typeof intent.expiresAt === "number"
+      && isFinite(intent.expiresAt)
+      && intent.expiresAt > now)
+    return intent.playing
+
+  return !!player.isPlaying
+}
+
 // Single executor for MPRIS playback actions. `action` must be one of
 // next/previous/play/pause; the generic playPause toggle is never accepted
 // here — callers normalize it to an explicit play or pause first. Play and
@@ -33,10 +52,13 @@ function canHandleAction(player, action) {
 // satisfied, otherwise togglePlaying() is preferred — Spotify-like players
 // advertise CanPlay/CanPause but only honor the PlayPause toggle on the
 // bus — and the dedicated method runs only when no toggle is available.
+// `playingState`, when supplied, is the caller's short-lived optimistic state
+// and prevents rapid clicks from waiting for the MPRIS property round trip.
 // next/previous stay guarded by their own capabilities. Returns whether a
 // player method actually ran.
-function performPlaybackAction(player, action) {
+function performPlaybackAction(player, action, playingState) {
   if (!player) return false
+  var isPlaying = typeof playingState === "boolean" ? playingState : !!player.isPlaying
 
   if (action === "next") {
     if (player.canGoNext) {
@@ -55,7 +77,7 @@ function performPlaybackAction(player, action) {
   }
 
   if (action === "play") {
-    if (player.isPlaying) return false
+    if (isPlaying) return false
     if (player.canTogglePlaying) {
       player.togglePlaying()
       return true
@@ -68,7 +90,7 @@ function performPlaybackAction(player, action) {
   }
 
   if (action === "pause") {
-    if (!player.isPlaying) return false
+    if (!isPlaying) return false
     if (player.canTogglePlaying) {
       player.togglePlaying()
       return true
@@ -110,12 +132,15 @@ function transferPlayback(current, next, enabled, playFn, pauseFn) {
 // pauses the previously playing source — the target is never sent play
 // or playPause, so a UI row click can never start audio on its own; the
 // user presses Play afterwards, and the preferred (paused) target then
-// outranks generic paused stream candidates. Guards match
-// transferPlayback: nothing runs unless the selection was requested,
-// current is playing, and the sources differ. Returns whether the pause
-// method reported success.
-function commitSourceSelection(current, next, enabled, pauseFn) {
-  if (!enabled || !current || !current.isPlaying) return false
+// outranks generic paused stream candidates. Guards match transferPlayback:
+// nothing runs unless the selection was requested, current is effectively
+// playing, and the sources differ. `currentPlaying`, when supplied, covers
+// the short interval before MPRIS confirms a preceding Play call. Returns
+// whether the pause method reported success.
+function commitSourceSelection(current, next, enabled, pauseFn, currentPlaying) {
+  var isCurrentPlaying = current && (typeof currentPlaying === "boolean"
+    ? currentPlaying : !!current.isPlaying)
+  if (!enabled || !current || !isCurrentPlaying) return false
   if (!next || playerKey(next) === playerKey(current)) return false
 
   return !!(pauseFn && pauseFn(current))
@@ -233,6 +258,7 @@ if (typeof module !== "undefined") {
     hasTrackMetadata: hasTrackMetadata,
     playerCanControl: playerCanControl,
     canHandleAction: canHandleAction,
+    effectivePlaying: effectivePlaying,
     performPlaybackAction: performPlaybackAction,
     canCycleSource: canCycleSource,
     transferPlayback: transferPlayback,

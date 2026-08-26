@@ -12,7 +12,7 @@ BarWidget {
   readonly property var activePlayer: mediaService ? mediaService.activePlayer : null
   readonly property var sourcePlayers: mediaService ? mediaService.sourcePlayers : []
   readonly property bool hasMedia: activePlayer !== null && (activePlayer.trackTitle || activePlayer.trackArtist)
-  readonly property bool isPlaying: !!(activePlayer && activePlayer.isPlaying)
+  readonly property bool isPlaying: !!(mediaService && mediaService.activePlaying)
   readonly property string playIcon: isPlaying ? "󰏤" : "󰐊"
   readonly property string title: activePlayer ? (activePlayer.trackTitle || "") : ""
   readonly property string artist: activePlayer ? (activePlayer.trackArtist || "") : ""
@@ -43,6 +43,7 @@ BarWidget {
     : Style.normalBorderFor(barTextColor, barActiveColor)
 
   property bool popupOpen: false
+  onPopupOpenChanged: if (popupOpen && mediaService) mediaService.primeVisualizer()
   property real maxLabelWidth: 180
   property real leadingGap: Style.space(8)
 
@@ -73,6 +74,8 @@ BarWidget {
     fixedWidth: content.implicitWidth + Style.space(20)
     fixedHeight: root.barSize
     tooltipText: root.hasMedia ? (root.title + (root.artist ? " — " + root.artist : "")) : ""
+    onTooltipHoveredChanged: if (tooltipHovered && root.mediaService)
+      root.mediaService.primeVisualizer()
 
     onPressed: function(button) {
       if (!root.activePlayer || !root.mediaService) return
@@ -173,7 +176,7 @@ BarWidget {
                 enabled: root.visualizerMonitoring
 
                 NumberAnimation {
-                  duration: 45
+                  duration: 16
                   easing.type: Easing.OutCubic
                 }
               }
@@ -414,7 +417,7 @@ BarWidget {
         Button {
           width: (transportDeck.width - transportDeck.spacing * 2) / 3
           height: transportDeck.height
-          iconText: root.activePlayer && root.activePlayer.isPlaying ? "󰏤" : "󰐊"
+          iconText: root.isPlaying ? "󰏤" : "󰐊"
           foreground: root.bar.foreground
           horizontalPadding: 0
           verticalPadding: 0
@@ -481,7 +484,8 @@ BarWidget {
 
               Text {
                 id: sourceIcon
-                text: sourceRow.player && sourceRow.player.isPlaying ? "󰏤" : "󰐊"
+                text: sourceRow.player && root.mediaService
+                  && root.mediaService.isEffectivelyPlaying(sourceRow.player) ? "󰏤" : "󰐊"
                 color: root.bar.foreground
                 font.family: root.bar.fontFamily
                 font.pixelSize: Style.font.iconLarge
