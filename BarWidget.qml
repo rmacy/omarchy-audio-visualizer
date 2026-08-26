@@ -308,37 +308,6 @@ BarWidget {
               anchors.fill: parent
               visible: albumDisk.artReady
 
-              Repeater {
-                model: [88, 72, 56, 44]
-
-                Item {
-                  required property real modelData
-
-                  anchors.centerIn: parent
-                  width: Style.space(modelData)
-                  height: width
-
-                  Rectangle {
-                    anchors.fill: parent
-                    radius: width / 2
-                    antialiasing: true
-                    color: "transparent"
-                    border.width: Style.space(2)
-                    border.color: Color.popups.background
-                    opacity: 0.72
-                  }
-
-                  Rectangle {
-                    anchors.fill: parent
-                    radius: width / 2
-                    antialiasing: true
-                    color: "transparent"
-                    border.width: Style.normalBorderWidth
-                    border.color: root.bar.foreground
-                    opacity: 0.62
-                  }
-                }
-              }
 
               Rectangle {
                 anchors.centerIn: parent
