@@ -44,7 +44,6 @@ Item {
   property real visualizerEnergy: 0
   property bool visualizerLive: false
   property int visualizerFrame: 0
-  property real visualizerSamplePeak: 0
   property real visualizerLatestPeak: 0
   property real visualizerLastFrameAt: 0
 
@@ -492,12 +491,7 @@ Item {
       if (root.visualizerMonitoring) root.visualizerLastFrameAt = Date.now()
     }
 
-    onPeakChanged: {
-      // Retain the strongest native peak inside each 40ms presentation frame
-      // while preserving the current value when consecutive buffers match.
-      root.visualizerLatestPeak = peak
-      if (peak > root.visualizerSamplePeak) root.visualizerSamplePeak = peak
-    }
+    onPeakChanged: root.visualizerLatestPeak = peak
   }
 
   Timer {
@@ -509,7 +503,6 @@ Item {
   }
 
   function resetVisualizer() {
-    visualizerSamplePeak = 0
     visualizerLatestPeak = 0
     visualizerPeak = 0
     visualizerEnergy = 0
@@ -522,13 +515,12 @@ Item {
     var now = Date.now()
     var frame = AudioVisualizerModel.advance(
       visualizerLevels,
-      visualizerSamplePeak,
+      visualizerLatestPeak,
       visualizerEnergy,
       now - visualizerLastFrameAt,
       visualizerLevelCount
     )
     visualizerLastFrameAt = now
-    visualizerSamplePeak = visualizerLatestPeak
     visualizerPeak = frame.peak
     visualizerEnergy = frame.energy
     visualizerLive = frame.live
@@ -539,7 +531,6 @@ Item {
   function syncVisualizer() {
     if (visualizerMonitoring) {
       visualizerLatestPeak = visualizerMonitor.peak
-      visualizerSamplePeak = visualizerLatestPeak
       visualizerLastFrameAt = Date.now()
       return
     }

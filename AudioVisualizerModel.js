@@ -30,9 +30,11 @@ function clampUnit(value) {
 // is actually flowing, and a fresh history array of exactly `count` entries
 // with energy appended as the newest value.
 function advance(levels, rawPeak, energy, elapsedMs, count) {
-  var target = clampUnit(rawPeak)
-  // Gate the noise floor: a target below the snap threshold is silence.
-  if (target < ZERO_SNAP) target = 0
+  var observedPeak = clampUnit(rawPeak)
+  // Gate the monitor noise floor, then undo PwNodePeakMonitor's cube-root
+  // display scaling so mastered audio does not pin every column near full.
+  if (observedPeak < ZERO_SNAP) observedPeak = 0
+  var target = observedPeak * observedPeak * observedPeak
   var previous = clampUnit(energy)
   var elapsed = isFinite(elapsedMs) && elapsedMs > 0 ? elapsedMs : 0
 
@@ -48,7 +50,7 @@ function advance(levels, rawPeak, energy, elapsedMs, count) {
   while (history.length < n) history.unshift(0)
 
   return {
-    peak: target,
+    peak: observedPeak,
     energy: next,
     live: next >= ZERO_SNAP,
     levels: history
