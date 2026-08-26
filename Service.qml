@@ -365,23 +365,22 @@ Item {
       function(target) { return root.pausePlayer(target) })
   }
 
-  // An explicit row click must commit its selection: unlike
-  // transferPlaybackBetween (used by switchSource), the previously
-  // playing source is paused even when the clicked target cannot start,
-  // so it can never keep outranking the preferred-but-paused target.
+  // An explicit row click is a two-step selection: it pauses whatever is
+  // currently playing but never starts the clicked target — the user
+  // presses Play afterwards. transferPlaybackBetween (used by
+  // switchSource) keeps its safe auto-transfer policy unchanged.
   function commitSourceSelectionBetween(current, next, enabled) {
     return MediaModel.commitSourceSelection(current, next, enabled,
-      function(target) { return root.playPlayer(target) },
       function(target) { return root.pausePlayer(target) })
   }
 
 
-  function selectPlayer(key, commitPlayback) {
+  function selectPlayer(key, pauseCurrent) {
     var player = playerForKey(key)
     if (!player || isBackgroundPlayer(player) || !hasMetadata(player)) return false
     var current = activePlayer
     preferredPlayerKey = playerKey(player)
-    commitSourceSelectionBetween(current, player, commitPlayback)
+    commitSourceSelectionBetween(current, player, pauseCurrent)
     return true
   }
 

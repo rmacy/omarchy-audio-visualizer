@@ -9,7 +9,8 @@
 //   - AudioVisualizerModel.zeroLevels / clampUnit / parseSpectrumFrame
 //   - MediaModel.playbackStreamForPlayer / playerHasPlaybackStream
 //   - MediaModel.transferPlayback (explicit source-switch handoff)
-//   - MediaModel.commitSourceSelection (explicit row-click selection commit)
+//   - MediaModel.commitSourceSelection (two-step row-click selection: pause
+//     current only, never play the target)
 //   - MediaModel.performPlaybackAction (explicit play/pause/next/previous execution)
 //   - MediaModel.visualizerShouldRun (visualizer wanted-state predicate)
 //
@@ -507,100 +508,99 @@ test("MediaModel exports commitSourceSelection", function () {
     "commitSourceSelection must be exported");
 });
 
-test("commitSourceSelection starts a paused target before pausing current", function () {
+test("commitSourceSelection pauses the playing current and never plays the target", function () {
   var current = mprisSource("chrome", true);
   var target = mprisSource("spotify", false);
   var log = [];
 
-  var started = MediaModel.commitSourceSelection(current, target, true,
-    actionSpy(log, "play", true), actionSpy(log, "pause", true));
+  var paused = MediaModel.commitSourceSelection(current, target, true,
+    actionSpy(log, "pause", true));
 
-  assert.strictEqual(started, true, "a started target reports true");
+  assert.strictEqual(paused, true, "a successful pause reports true");
   assert.deepStrictEqual(log, [
-    { action: "play", player: target },
     { action: "pause", player: current }
-  ], "play(target) must precede pause(current)");
+  ], "an explicit selection must pause current and never issue play on the target");
 });
 
-test("commitSourceSelection skips play when the target is already playing", function () {
+test("commitSourceSelection pauses current even when the target is already playing", function () {
   var current = mprisSource("chrome", true);
   var target = mprisSource("spotify", true);
   var log = [];
 
-  var started = MediaModel.commitSourceSelection(current, target, true,
-    actionSpy(log, "play", true), actionSpy(log, "pause", true));
+  var paused = MediaModel.commitSourceSelection(current, target, true,
+    actionSpy(log, "pause", true));
 
-  assert.strictEqual(started, true, "an already-playing target reports true");
+  assert.strictEqual(paused, true, "a successful pause reports true");
   assert.deepStrictEqual(log, [
     { action: "pause", player: current }
-  ], "an already-playing target must never be sent play");
+  ], "no target is ever sent play, not even an already-playing one");
 });
 
-test("commitSourceSelection still pauses current after a failed target start", function () {
+test("commitSourceSelection reports false when the pause method fails", function () {
   var current = mprisSource("chrome", true);
   var target = mprisSource("spotify", false);
   var log = [];
 
-  var started = MediaModel.commitSourceSelection(current, target, true,
-    actionSpy(log, "play", false), actionSpy(log, "pause", true));
+  var paused = MediaModel.commitSourceSelection(current, target, true,
+    actionSpy(log, "pause", false));
 
-  assert.strictEqual(started, false, "a failed start reports false");
+  assert.strictEqual(paused, false, "a failed pause reports false");
   assert.deepStrictEqual(log, [
-    { action: "play", player: target },
     { action: "pause", player: current }
-  ], "an explicit selection must silence current even when the target cannot start");
+  ], "the pause attempt still runs; only its result is reported");
 
-  // A play callback without a truthy result is equally a failed start, and
-  // the explicit selection still commits.
+  // A pause callback without a truthy result is equally a failed pause.
   log = [];
-  var reluctantTarget = mprisSource("spotify", false);
-  var playingCurrent = mprisSource("chrome", true);
-  started = MediaModel.commitSourceSelection(playingCurrent, reluctantTarget, true,
-    actionSpy(log, "play"), actionSpy(log, "pause", true));
+  var reluctantCurrent = mprisSource("chrome", true);
+  paused = MediaModel.commitSourceSelection(reluctantCurrent, mprisSource("spotify", false), true,
+    actionSpy(log, "pause"));
 
-  assert.strictEqual(started, false, "a falsy play result reports false");
+  assert.strictEqual(paused, false, "a falsy pause result reports false");
   assert.deepStrictEqual(log, [
-    { action: "play", player: reluctantTarget },
-    { action: "pause", player: playingCurrent }
-  ], "a falsy play result still pauses current so it cannot outrank the target");
+    { action: "pause", player: reluctantCurrent }
+  ], "a falsy pause result is reported, never hidden");
+
+  // No pause method at all is a refusal to act, never a throw.
+  paused = MediaModel.commitSourceSelection(mprisSource("chrome", true), mprisSource("spotify", false), true, null);
+  assert.strictEqual(paused, false, "a missing pause method reports false");
 });
 
 var commitRefusals = [
   {
     name: "the selection was not requested",
-    commit: function (play, pause) {
-      return MediaModel.commitSourceSelection(mprisSource("chrome", true), mprisSource("spotify", false), false, play, pause);
+    commit: function (pause) {
+      return MediaModel.commitSourceSelection(mprisSource("chrome", true), mprisSource("spotify", false), false, pause);
     }
   },
   {
     name: "current is paused",
-    commit: function (play, pause) {
-      return MediaModel.commitSourceSelection(mprisSource("chrome", false), mprisSource("spotify", false), true, play, pause);
+    commit: function (pause) {
+      return MediaModel.commitSourceSelection(mprisSource("chrome", false), mprisSource("spotify", false), true, pause);
     }
   },
   {
     name: "the target is the current player itself",
-    commit: function (play, pause) {
+    commit: function (pause) {
       var current = mprisSource("chrome", true);
-      return MediaModel.commitSourceSelection(current, current, true, play, pause);
+      return MediaModel.commitSourceSelection(current, current, true, pause);
     }
   },
   {
     name: "the target only shares the current player's key",
-    commit: function (play, pause) {
-      return MediaModel.commitSourceSelection(mprisSource("chrome", true), mprisSource("chrome", false), true, play, pause);
+    commit: function (pause) {
+      return MediaModel.commitSourceSelection(mprisSource("chrome", true), mprisSource("chrome", false), true, pause);
     }
   },
   {
     name: "no current player exists",
-    commit: function (play, pause) {
-      return MediaModel.commitSourceSelection(null, mprisSource("spotify", false), true, play, pause);
+    commit: function (pause) {
+      return MediaModel.commitSourceSelection(null, mprisSource("spotify", false), true, pause);
     }
   },
   {
     name: "no target player exists",
-    commit: function (play, pause) {
-      return MediaModel.commitSourceSelection(mprisSource("chrome", true), null, true, play, pause);
+    commit: function (pause) {
+      return MediaModel.commitSourceSelection(mprisSource("chrome", true), null, true, pause);
     }
   }
 ];
@@ -608,9 +608,9 @@ var commitRefusals = [
 commitRefusals.forEach(function (scenario) {
   test("commitSourceSelection refuses to act when " + scenario.name, function () {
     var log = [];
-    var started = scenario.commit(actionSpy(log, "play", true), actionSpy(log, "pause", true));
+    var paused = scenario.commit(actionSpy(log, "pause", true));
 
-    assert.strictEqual(started, false, "a refused selection reports false");
+    assert.strictEqual(paused, false, "a refused selection reports false");
     assert.deepStrictEqual(log, [], "a refused selection must issue no playback actions");
   });
 });
@@ -895,16 +895,19 @@ visualizerMatrix.forEach(function (row) {
 // sequential source-transition scenario
 // ---------------------------------------------------------------------------
 
-// One continuous model walk: Chrome is playing, Spotify is selected
-// explicitly, paused, resumed, and Chrome is switched back to safely. Every
-// playback step routes through performPlaybackAction — including the
-// play/pause handoffs the selection and transfer helpers inject — so the
-// shared log pins the exact action order across the whole sequence while
-// visualizerShouldRun is recomputed after each state change. A regression
-// that fires the dedicated play/pause methods on a toggle-capable player,
-// reverses the handoff order, or leaves the visualizer wanted while the
+// One continuous model walk of the two-step selection policy: Chrome is
+// playing, Spotify is selected explicitly (Chrome pauses, Spotify becomes
+// the selected-but-paused target), Spotify is played and paused through
+// the explicit controls, resumed, then Chrome is selected the same
+// two-step way and finally resumed by hand. Every playback step routes
+// through performPlaybackAction — including the pause the selection
+// helper injects — so the shared log pins the exact action order across
+// the whole sequence while visualizerShouldRun is recomputed after each
+// state change. A regression that plays the clicked target, pauses the
+// wrong source, fires the dedicated play/pause methods on a
+// toggle-capable player, or leaves the visualizer wanted while the
 // active player is paused fails here.
-test("chrome playing, spotify selected, paused, resumed, chrome switched back", function () {
+test("chrome playing, spotify selected paused and toggled, chrome selected, chrome resumed", function () {
   var log = [];
   var chrome = spyPlayer(log, "chromium", {
     isPlaying: true, canPlay: true, canPause: true, canTogglePlaying: true
@@ -913,9 +916,6 @@ test("chrome playing, spotify selected, paused, resumed, chrome switched back", 
     isPlaying: false, canPlay: true, canPause: true, canTogglePlaying: true
   });
 
-  function play(p) {
-    return MediaModel.performPlaybackAction(p, "play");
-  }
   function pause(p) {
     return MediaModel.performPlaybackAction(p, "pause");
   }
@@ -925,21 +925,28 @@ test("chrome playing, spotify selected, paused, resumed, chrome switched back", 
   assert.strictEqual(MediaModel.visualizerShouldRun(active, true), true,
     "the visualizer is wanted while the active player plays");
 
-  // Explicit Spotify selection: the paused target starts strictly before the
-  // playing current is paused.
-  assert.strictEqual(MediaModel.commitSourceSelection(chrome, spotify, true, play, pause),
-    true, "a committed selection reports true");
+  // Two-step Spotify selection: only the playing current (Chrome) is
+  // paused — Spotify itself is never sent play or playPause.
+  assert.strictEqual(MediaModel.commitSourceSelection(chrome, spotify, true, pause),
+    true, "a committed selection reports the pause succeeding");
   assert.deepStrictEqual(log, [
-    { action: "toggle", player: "spotify" },
     { action: "toggle", player: "chromium" }
-  ], "selection must start spotify before pausing chrome");
+  ], "selection must pause chrome and never start spotify");
   log.length = 0;
 
   active = spotify;
-  assert.strictEqual(spotify.isPlaying, true, "spotify now plays");
-  assert.strictEqual(chrome.isPlaying, false, "chrome is now paused");
+  assert.strictEqual(chrome.isPlaying, false, "chrome is paused by the selection");
+  assert.strictEqual(spotify.isPlaying, false, "spotify stays paused: a selection never plays the target");
+  assert.strictEqual(MediaModel.visualizerShouldRun(active, true), false,
+    "the visualizer stays off for the selected paused target");
+
+  // Explicit play of Spotify: the toggle, never the dedicated method.
+  assert.strictEqual(MediaModel.performPlaybackAction(spotify, "play"), true);
+  assert.deepStrictEqual(log, [{ action: "toggle", player: "spotify" }],
+    "playing spotify must run togglePlaying(), not play()");
+  log.length = 0;
   assert.strictEqual(MediaModel.visualizerShouldRun(active, true), true,
-    "the visualizer follows the newly active playing player");
+    "the visualizer is wanted only after the target's own play succeeds");
 
   // Explicit pause of Spotify: the toggle, never the dedicated method.
   assert.strictEqual(MediaModel.performPlaybackAction(spotify, "pause"), true);
@@ -951,7 +958,8 @@ test("chrome playing, spotify selected, paused, resumed, chrome switched back", 
   assert.strictEqual(MediaModel.visualizerShouldRun(active, false), false,
     "an unavailable visualizer is never wanted, even while playing");
 
-  // Explicit resume of Spotify: the toggle, never the dedicated method.
+  // Explicit resume of Spotify so the next selection exercises the pause
+  // path against a genuinely playing current.
   assert.strictEqual(MediaModel.performPlaybackAction(spotify, "play"), true);
   assert.deepStrictEqual(log, [{ action: "toggle", player: "spotify" }],
     "resuming spotify must run togglePlaying(), not play()");
@@ -959,21 +967,28 @@ test("chrome playing, spotify selected, paused, resumed, chrome switched back", 
   assert.strictEqual(MediaModel.visualizerShouldRun(active, true), true,
     "the visualizer is wanted again once the active player resumes");
 
-  // Safe switch back: chrome only replaces spotify once it is actually
-  // playing, which is transferPlayback's guarantee.
-  assert.strictEqual(MediaModel.transferPlayback(spotify, chrome, true, play, pause),
-    true, "a completed switch-back reports true");
+  // Two-step Chrome selection: playing Spotify pauses, Chrome itself is
+  // never auto-played.
+  assert.strictEqual(MediaModel.commitSourceSelection(spotify, chrome, true, pause),
+    true, "a committed selection reports the pause succeeding");
   assert.deepStrictEqual(log, [
-    { action: "toggle", player: "chromium" },
     { action: "toggle", player: "spotify" }
-  ], "switch-back must start chrome before pausing spotify");
+  ], "selection must pause spotify and never start chrome");
   log.length = 0;
 
   active = chrome;
-  assert.strictEqual(chrome.isPlaying, true, "chrome plays again");
-  assert.strictEqual(spotify.isPlaying, false, "spotify is paused again");
+  assert.strictEqual(spotify.isPlaying, false, "spotify is paused by the selection");
+  assert.strictEqual(chrome.isPlaying, false, "chrome stays paused: a selection never plays the target");
+  assert.strictEqual(MediaModel.visualizerShouldRun(active, true), false,
+    "the visualizer stays off for the selected paused target");
+
+  // Explicit play of Chrome: the toggle, never the dedicated method.
+  assert.strictEqual(MediaModel.performPlaybackAction(chrome, "play"), true);
+  assert.deepStrictEqual(log, [{ action: "toggle", player: "chromium" }],
+    "resuming chrome must run togglePlaying(), not play()");
+  log.length = 0;
   assert.strictEqual(MediaModel.visualizerShouldRun(active, true), true,
-    "the visualizer follows the restored active player");
+    "the visualizer is wanted only after the target's own play succeeds");
   assert.strictEqual(MediaModel.visualizerShouldRun(spotify, true), false,
     "a paused non-active player never keeps the visualizer wanted");
 });

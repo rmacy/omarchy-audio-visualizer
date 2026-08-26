@@ -106,19 +106,19 @@ function transferPlayback(current, next, enabled, playFn, pauseFn) {
 }
 
 // Commits an explicit selection of `next` over the playing `current`
-// through the injected playFn/pauseFn. Guards match transferPlayback:
-// nothing runs unless the selection was requested, current is playing,
-// and the sources differ. The pause policy is what differs — current is
-// paused even when a paused target fails to start, so a still-playing
-// source can never outrank the explicitly preferred (possibly paused)
-// target afterwards. Returns whether the target ended up playing.
-function commitSourceSelection(current, next, enabled, playFn, pauseFn) {
+// through the injected pauseFn. Two-step by design: the selection only
+// pauses the previously playing source — the target is never sent play
+// or playPause, so a UI row click can never start audio on its own; the
+// user presses Play afterwards, and the preferred (paused) target then
+// outranks generic paused stream candidates. Guards match
+// transferPlayback: nothing runs unless the selection was requested,
+// current is playing, and the sources differ. Returns whether the pause
+// method reported success.
+function commitSourceSelection(current, next, enabled, pauseFn) {
   if (!enabled || !current || !current.isPlaying) return false
   if (!next || playerKey(next) === playerKey(current)) return false
 
-  var nextStarted = !!(next.isPlaying || (playFn ? playFn(next) : false))
-  if (pauseFn) pauseFn(current)
-  return nextStarted
+  return !!(pauseFn && pauseFn(current))
 }
 
 function nodeProps(node) {

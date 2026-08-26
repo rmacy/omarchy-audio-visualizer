@@ -96,7 +96,7 @@ Manual alternative: clone or copy this folder to
 | Scroll up on chip          | Previous track                           |
 | Scroll down on chip        | Next track                               |
 | Popup buttons              | Previous / play-pause / next             |
-| Popup source list          | Switch the active player (starts the clicked source when possible; a playing source is paused) |
+| Popup source list          | Select the active player (pauses the old playing source; press Play if the target is paused) |
 | Hover chip                 | Full "title — artist" tooltip            |
 
 Play/Pause from the chip and the popup is **state-aware**: the control
@@ -105,8 +105,9 @@ already-playing player (or pause on an already-paused one) is a no-op —
 it never blindly toggles an already-satisfied state. When the source
 supports MPRIS toggling, the control sends a single `PlayPause` to reach
 the desired state; sources without toggle support get the dedicated
-`Play` or `Pause` call instead. Source switching runs its start/pause
-steps through the same state-aware path.
+`Play` or `Pause` call instead. Selecting a source never plays anything;
+its one action — pausing the outgoing playing source — runs through the
+same state-aware path.
 
 ## Source selection
 
@@ -114,18 +115,18 @@ With multiple players running, right-click the chip and pick a source in
 the popup. Sources can also be cycled without the mouse through the
 service's IPC: `sourceNext`, `sourcePrevious`, `sourceSwitch`, and
 `sourceSwitchPrevious` (for example,
-`omarchy-shell media sourceNext`). Playback can transfer to the newly
-selected player as part of the switch.
+`omarchy-shell media sourceNext`). The cycle commands may transfer
+playback to the newly selected player as part of the switch.
 
-Clicking a source row always commits that source: the clicked player
-becomes the one the chip follows regardless of what happens next.
-When another source is playing, the click first attempts to start the
-clicked source, then pauses the previous source either way, so the old
-playing source can no longer outrank your explicit pick. A player that
-cannot be started remotely stays selected but paused — press Play on
-the chip or in the popup to begin. Clicking the already-active source,
-or any source while playback is paused, changes only which player the
-chip follows; no play or pause is issued.
+Clicking a source row is deliberately selection-first. The click always
+commits that source — the clicked player becomes the one the chip follows
+— and, when another source is playing, pauses only that old playing
+source. The click never starts the target. A paused target stays active
+but paused, your explicit pick outranking generic paused stream
+candidates, until you press Play on the chip or in the popup. A target
+that was already playing remains playing. Clicking the already-active
+source, or any source while nothing is playing, changes only which player
+the chip follows; no play or pause is issued.
 
 ## Media keys
 
@@ -159,9 +160,10 @@ Because the FFT taps the default PipeWire output mix rather than one
 player's private stream, the bands show whatever is audible — with
 several players running, the spectrum reflects the whole mix, not the
 selected player alone. Its on/off state still follows the selected
-source: pausing that player stops the visualizer and clears the bars
-even while other audio remains audible, and restarting playback
-resumes it. Silence or pause settles every band at zero.
+source: pausing that player — or selecting a source that is still
+paused — stops the visualizer and clears the bars even while other
+audio remains audible, and it resumes only once the selected source
+is actually playing. Silence or pause settles every band at zero.
 
 Each bar's height is its band's current energy, shaped by a gentle
 `pow(level, 0.72)` curve so quiet material still reads visually.
