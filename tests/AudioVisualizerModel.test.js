@@ -9,6 +9,7 @@
 //   - AudioVisualizerModel.zeroLevels / clampUnit / parseSpectrumFrame
 //   - MediaModel.playbackStreamForPlayer / playerHasPlaybackStream
 //   - MediaModel.transferPlayback (explicit source-switch handoff)
+//   - MediaModel.commitSourceSelection (explicit row-click selection commit)
 //
 // Expected spectra are recomputed here from the documented pipeline with
 // literal constants (floor 0.008, gamma 0.72, live 0.02) so any drift in the
@@ -492,6 +493,123 @@ transferRefusals.forEach(function (scenario) {
 
     assert.strictEqual(ran, false, "a refused transfer reports false");
     assert.deepStrictEqual(log, [], "a refused transfer must issue no playback actions");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// MediaModel.commitSourceSelection
+// ---------------------------------------------------------------------------
+
+test("MediaModel exports commitSourceSelection", function () {
+  assert.strictEqual(typeof MediaModel.commitSourceSelection, "function",
+    "commitSourceSelection must be exported");
+});
+
+test("commitSourceSelection starts a paused target before pausing current", function () {
+  var current = mprisSource("chrome", true);
+  var target = mprisSource("spotify", false);
+  var log = [];
+
+  var started = MediaModel.commitSourceSelection(current, target, true,
+    actionSpy(log, "play", true), actionSpy(log, "pause", true));
+
+  assert.strictEqual(started, true, "a started target reports true");
+  assert.deepStrictEqual(log, [
+    { action: "play", player: target },
+    { action: "pause", player: current }
+  ], "play(target) must precede pause(current)");
+});
+
+test("commitSourceSelection skips play when the target is already playing", function () {
+  var current = mprisSource("chrome", true);
+  var target = mprisSource("spotify", true);
+  var log = [];
+
+  var started = MediaModel.commitSourceSelection(current, target, true,
+    actionSpy(log, "play", true), actionSpy(log, "pause", true));
+
+  assert.strictEqual(started, true, "an already-playing target reports true");
+  assert.deepStrictEqual(log, [
+    { action: "pause", player: current }
+  ], "an already-playing target must never be sent play");
+});
+
+test("commitSourceSelection still pauses current after a failed target start", function () {
+  var current = mprisSource("chrome", true);
+  var target = mprisSource("spotify", false);
+  var log = [];
+
+  var started = MediaModel.commitSourceSelection(current, target, true,
+    actionSpy(log, "play", false), actionSpy(log, "pause", true));
+
+  assert.strictEqual(started, false, "a failed start reports false");
+  assert.deepStrictEqual(log, [
+    { action: "play", player: target },
+    { action: "pause", player: current }
+  ], "an explicit selection must silence current even when the target cannot start");
+
+  // A play callback without a truthy result is equally a failed start, and
+  // the explicit selection still commits.
+  log = [];
+  var reluctantTarget = mprisSource("spotify", false);
+  var playingCurrent = mprisSource("chrome", true);
+  started = MediaModel.commitSourceSelection(playingCurrent, reluctantTarget, true,
+    actionSpy(log, "play"), actionSpy(log, "pause", true));
+
+  assert.strictEqual(started, false, "a falsy play result reports false");
+  assert.deepStrictEqual(log, [
+    { action: "play", player: reluctantTarget },
+    { action: "pause", player: playingCurrent }
+  ], "a falsy play result still pauses current so it cannot outrank the target");
+});
+
+var commitRefusals = [
+  {
+    name: "the selection was not requested",
+    commit: function (play, pause) {
+      return MediaModel.commitSourceSelection(mprisSource("chrome", true), mprisSource("spotify", false), false, play, pause);
+    }
+  },
+  {
+    name: "current is paused",
+    commit: function (play, pause) {
+      return MediaModel.commitSourceSelection(mprisSource("chrome", false), mprisSource("spotify", false), true, play, pause);
+    }
+  },
+  {
+    name: "the target is the current player itself",
+    commit: function (play, pause) {
+      var current = mprisSource("chrome", true);
+      return MediaModel.commitSourceSelection(current, current, true, play, pause);
+    }
+  },
+  {
+    name: "the target only shares the current player's key",
+    commit: function (play, pause) {
+      return MediaModel.commitSourceSelection(mprisSource("chrome", true), mprisSource("chrome", false), true, play, pause);
+    }
+  },
+  {
+    name: "no current player exists",
+    commit: function (play, pause) {
+      return MediaModel.commitSourceSelection(null, mprisSource("spotify", false), true, play, pause);
+    }
+  },
+  {
+    name: "no target player exists",
+    commit: function (play, pause) {
+      return MediaModel.commitSourceSelection(mprisSource("chrome", true), null, true, play, pause);
+    }
+  }
+];
+
+commitRefusals.forEach(function (scenario) {
+  test("commitSourceSelection refuses to act when " + scenario.name, function () {
+    var log = [];
+    var started = scenario.commit(actionSpy(log, "play", true), actionSpy(log, "pause", true));
+
+    assert.strictEqual(started, false, "a refused selection reports false");
+    assert.deepStrictEqual(log, [], "a refused selection must issue no playback actions");
   });
 });
 

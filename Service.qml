@@ -363,12 +363,23 @@ Item {
       function(target) { return root.pausePlayer(target) })
   }
 
-  function selectPlayer(key, transferPlayback) {
+  // An explicit row click must commit its selection: unlike
+  // transferPlaybackBetween (used by switchSource), the previously
+  // playing source is paused even when the clicked target cannot start,
+  // so it can never keep outranking the preferred-but-paused target.
+  function commitSourceSelectionBetween(current, next, enabled) {
+    return MediaModel.commitSourceSelection(current, next, enabled,
+      function(target) { return root.playPlayer(target) },
+      function(target) { return root.pausePlayer(target) })
+  }
+
+
+  function selectPlayer(key, commitPlayback) {
     var player = playerForKey(key)
     if (!player || isBackgroundPlayer(player) || !hasMetadata(player)) return false
     var current = activePlayer
     preferredPlayerKey = playerKey(player)
-    transferPlaybackBetween(current, player, transferPlayback)
+    commitSourceSelectionBetween(current, player, commitPlayback)
     return true
   }
 
