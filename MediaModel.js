@@ -71,21 +71,30 @@ function playerAppLabel(player) {
   return player.desktopEntry || player.identity || dbus
 }
 
-function playerHasPlaybackStream(player, playbackStreams) {
-  var playerKey = streamLabelKey(playerAppLabel(player))
-  if (!playerKey) return false
+// Matches a player to its PipeWire playback stream: the first stream whose
+// normalized label exactly matches the player's app label, else the first
+// partial match (either label containing the other), else null.
+function playbackStreamForPlayer(player, playbackStreams) {
+  var key = streamLabelKey(playerAppLabel(player))
+  if (!key) return null
 
   var streams = Array.isArray(playbackStreams) ? playbackStreams : []
+  var partial = null
+
   for (var i = 0; i < streams.length; i++) {
     var streamKey = streamLabelKey(rawStreamLabel(streams[i]))
     if (!streamKey) continue
-    if (streamKey === playerKey
-        || streamKey.indexOf(playerKey) !== -1
-        || playerKey.indexOf(streamKey) !== -1)
-      return true
+    if (streamKey === key) return streams[i]
+    if (partial === null
+        && (streamKey.indexOf(key) !== -1 || key.indexOf(streamKey) !== -1))
+      partial = streams[i]
   }
 
-  return false
+  return partial
+}
+
+function playerHasPlaybackStream(player, playbackStreams) {
+  return playbackStreamForPlayer(player, playbackStreams) !== null
 }
 
 function playerKey(player) {
@@ -133,6 +142,7 @@ if (typeof module !== "undefined") {
     rawStreamLabel: rawStreamLabel,
     playerAppLabel: playerAppLabel,
     playerHasPlaybackStream: playerHasPlaybackStream,
+    playbackStreamForPlayer: playbackStreamForPlayer,
     playerKey: playerKey,
     trackSignature: trackSignature,
     trackChanged: trackChanged,

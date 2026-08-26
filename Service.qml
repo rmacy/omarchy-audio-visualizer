@@ -4,6 +4,7 @@ import Quickshell.Io
 import Quickshell.Services.Mpris
 import Quickshell.Services.Pipewire
 import "MediaModel.js" as MediaModel
+import "AudioVisualizerModel.js" as AudioVisualizerModel
 
 Item {
   id: root
@@ -33,6 +34,19 @@ Item {
   readonly property string album: activePlayer && activePlayer.trackAlbum ? activePlayer.trackAlbum : ""
   readonly property string artUrl: activePlayer && activePlayer.trackArtUrl ? activePlayer.trackArtUrl : ""
   readonly property string identity: activePlayer ? (activePlayer.identity || activePlayer.desktopEntry || "") : ""
+  // Temporal waveform state fed by the active player's real PipeWire peak.
+  readonly property var activePlaybackStream: MediaModel.playbackStreamForPlayer(activePlayer, playbackStreams)
+  readonly property bool visualizerAvailable: activePlaybackStream !== null
+  readonly property bool visualizerMonitoring: visualizerAvailable && activePlayer !== null && activePlayer.isPlaying
+  readonly property int visualizerLevelCount: 9
+  property var visualizerLevels: AudioVisualizerModel.zeroLevels(visualizerLevelCount)
+  property real visualizerPeak: 0
+  property real visualizerEnergy: 0
+  property bool visualizerLive: false
+  property int visualizerFrame: 0
+  property real visualizerSamplePeak: 0
+  property real visualizerLatestPeak: 0
+  property real visualizerLastFrameAt: 0
 
   function isProxyPlayer(player) {
     return MediaModel.isProxyPlayer(player)
@@ -90,6 +104,9 @@ Item {
 
   function playerHasPlaybackStream(player) {
     return MediaModel.playerHasPlaybackStream(player, playbackStreams)
+  }
+  function playbackStreamForPlayer(player) {
+    return MediaModel.playbackStreamForPlayer(player, playbackStreams)
   }
 
   function playerKey(player) {
@@ -446,6 +463,7 @@ Item {
   // and the Instantiator wires isPlayingChanged for each live player.
   Component.onCompleted: root.syncPlayingOrder()
   onPlayersChanged: root.syncPlayingOrder()
+  onVisualizerMonitoringChanged: root.syncVisualizer()
 
   Instantiator {
     model: root.players
@@ -464,6 +482,69 @@ Item {
   }
 
   PwObjectTracker { objects: root.playbackStreams }
+  PwNodePeakMonitor {
+    id: visualizerMonitor
+    node: root.activePlaybackStream
+    enabled: root.visualizerMonitoring
+
+    onNodeChanged: {
+      root.resetVisualizer()
+      if (root.visualizerMonitoring) root.visualizerLastFrameAt = Date.now()
+    }
+
+    onPeakChanged: {
+      // Retain the strongest native peak inside each 40ms presentation frame
+      // while preserving the current value when consecutive buffers match.
+      root.visualizerLatestPeak = peak
+      if (peak > root.visualizerSamplePeak) root.visualizerSamplePeak = peak
+    }
+  }
+
+  Timer {
+    id: visualizerTimer
+    interval: 40
+    repeat: true
+    running: root.visualizerMonitoring
+    onTriggered: root.pushVisualizerFrame()
+  }
+
+  function resetVisualizer() {
+    visualizerSamplePeak = 0
+    visualizerLatestPeak = 0
+    visualizerPeak = 0
+    visualizerEnergy = 0
+    visualizerLive = false
+    visualizerLevels = AudioVisualizerModel.zeroLevels(visualizerLevelCount)
+  }
+
+  function pushVisualizerFrame() {
+    if (!visualizerMonitoring) return
+    var now = Date.now()
+    var frame = AudioVisualizerModel.advance(
+      visualizerLevels,
+      visualizerSamplePeak,
+      visualizerEnergy,
+      now - visualizerLastFrameAt,
+      visualizerLevelCount
+    )
+    visualizerLastFrameAt = now
+    visualizerSamplePeak = visualizerLatestPeak
+    visualizerPeak = frame.peak
+    visualizerEnergy = frame.energy
+    visualizerLive = frame.live
+    visualizerLevels = frame.levels
+    visualizerFrame += 1
+  }
+
+  function syncVisualizer() {
+    if (visualizerMonitoring) {
+      visualizerLatestPeak = visualizerMonitor.peak
+      visualizerSamplePeak = visualizerLatestPeak
+      visualizerLastFrameAt = Date.now()
+      return
+    }
+    resetVisualizer()
+  }
 
   function statusJson() {
     var p = activePlayer
@@ -479,7 +560,14 @@ Item {
       artUrl: p && p.trackArtUrl ? p.trackArtUrl : "",
       canGoNext: p ? !!p.canGoNext : false,
       canGoPrevious: p ? !!p.canGoPrevious : false,
-      canTogglePlaying: p ? !!p.canTogglePlaying : false
+      canTogglePlaying: p ? !!p.canTogglePlaying : false,
+      visualizerAvailable: root.visualizerAvailable,
+      visualizerMonitoring: root.visualizerMonitoring,
+      visualizerLive: root.visualizerLive,
+      visualizerPeak: root.visualizerPeak,
+      visualizerEnergy: root.visualizerEnergy,
+      visualizerLevels: root.visualizerLevels,
+      visualizerFrame: root.visualizerFrame
     })
   }
 

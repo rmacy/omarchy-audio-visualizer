@@ -16,22 +16,46 @@ BarWidget {
   readonly property string title: activePlayer ? (activePlayer.trackTitle || "") : ""
   readonly property string artist: activePlayer ? (activePlayer.trackArtist || "") : ""
 
-  // Midnight surface with teal/cyan playback instrumentation.
-  readonly property color musicColor: "#5eead4"
-  readonly property color musicHighlight: "#61d5f8"
-  readonly property color mutedMusicColor: "#5b8f91"
-  readonly property color chipSurface: bar && !bar.transparent
-    ? Qt.rgba(0.025, 0.05, 0.10, 0.94)
-    : Qt.rgba(0.025, 0.05, 0.10, 0.68)
-  readonly property color chipBorder: Qt.rgba(
-    musicColor.r, musicColor.g, musicColor.b, isPlaying ? 0.56 : 0.28
-  )
+  readonly property var zeroVisualizerLevels: [0, 0, 0, 0, 0, 0, 0, 0, 0]
+  readonly property var visualizerLevels: mediaService
+    && mediaService.visualizerLevels
+    && mediaService.visualizerLevels.length === 9
+      ? mediaService.visualizerLevels
+      : zeroVisualizerLevels
+  readonly property real visualizerPeak: mediaService && isFinite(mediaService.visualizerPeak)
+    ? mediaService.visualizerPeak : 0
+  readonly property real visualizerEnergy: mediaService && isFinite(mediaService.visualizerEnergy)
+    ? mediaService.visualizerEnergy : 0
+  readonly property bool visualizerLive: !!(mediaService && mediaService.visualizerLive)
+  readonly property bool visualizerAvailable: !!(mediaService && mediaService.visualizerAvailable)
+  readonly property bool visualizerMonitoring: !!(mediaService && mediaService.visualizerMonitoring)
+  readonly property int visualizerFrame: mediaService ? (mediaService.visualizerFrame || 0) : 0
+
+  readonly property color barTextColor: Color.bar.text
+  readonly property color barActiveColor: Color.bar.active
+  readonly property color barMutedColor: Color.muted
+  readonly property color chipSurface: chip.tooltipHovered
+    ? Style.hoverFillFor(barTextColor, barActiveColor)
+    : Style.normalFillFor(barTextColor, barActiveColor)
+  readonly property color chipBorder: chip.tooltipHovered
+    ? Style.hoverBorderFor(barTextColor, barActiveColor)
+    : Style.normalBorderFor(barTextColor, barActiveColor)
 
   property bool popupOpen: false
   property real maxLabelWidth: 180
   property real leadingGap: Style.space(8)
 
   function close() { popupOpen = false }
+
+  function mixColor(from, to, amount) {
+    var t = Math.max(0, Math.min(1, amount))
+    return Qt.rgba(
+      from.r + (to.r - from.r) * t,
+      from.g + (to.g - from.g) * t,
+      from.b + (to.b - from.b) * t,
+      from.a + (to.a - from.a) * t
+    )
+  }
 
   visible: hasMedia
   implicitWidth: hasMedia ? chip.implicitWidth + leadingGap * 2 : 0
@@ -72,7 +96,7 @@ BarWidget {
       anchors.topMargin: 2
       anchors.bottomMargin: 2
       color: root.chipSurface
-      border.width: 1
+      border.width: chip.tooltipHovered ? Style.hoverBorderWidth : Style.normalBorderWidth
       border.color: root.chipBorder
       radius: height / 2
 
@@ -84,13 +108,15 @@ BarWidget {
     Row {
       id: content
       anchors.centerIn: parent
-      spacing: Style.space(6)
+      spacing: Style.space(4)
 
       Text {
         id: glyph
         anchors.verticalCenter: parent.verticalCenter
+        width: Style.space(14)
+        horizontalAlignment: Text.AlignHCenter
         text: root.playIcon
-        color: root.isPlaying ? root.musicColor : root.mutedMusicColor
+        color: root.isPlaying ? root.barActiveColor : root.barMutedColor
         font.family: root.bar.fontFamily
         font.pixelSize: Style.font.body
         opacity: root.isPlaying ? 1 : 0.7
@@ -105,54 +131,52 @@ BarWidget {
 
       Item {
         id: equalizer
-        width: Style.space(20)
+        readonly property int columnCount: 9
+        readonly property real columnWidth: Style.space(2)
+        readonly property real columnGap: Style.space(1)
+        readonly property real baselineHeight: Style.space(2)
+
+        width: columnCount * columnWidth + (columnCount - 1) * columnGap
         height: Style.space(16)
         anchors.verticalCenter: parent.verticalCenter
 
         Row {
-          anchors.centerIn: parent
-          spacing: Style.space(2)
+          anchors.horizontalCenter: parent.horizontalCenter
+          anchors.bottom: parent.bottom
+          spacing: equalizer.columnGap
 
           Repeater {
-            model: 4
+            model: equalizer.columnCount
 
             Rectangle {
               required property int index
-              readonly property real restingHeight: Style.space(3)
-              readonly property real peakHeight: Style.space([8, 14, 11, 16][index])
-              readonly property real middleHeight: Style.space([5, 8, 6, 10][index])
-              property real pulseHeight: restingHeight
-
-              width: Style.space(2)
-              height: root.isPlaying ? pulseHeight : restingHeight
-              radius: width / 2
-              anchors.verticalCenter: parent.verticalCenter
-              color: root.isPlaying && index % 2 ? root.musicHighlight
-                : (root.isPlaying ? root.musicColor : root.mutedMusicColor)
-
-              Behavior on color {
-                ColorAnimation { duration: 180 }
+              readonly property real level: {
+                root.visualizerFrame
+                var value = root.visualizerLevels[index]
+                return isFinite(value) ? Math.max(0, Math.min(1, value)) : 0
               }
 
-              SequentialAnimation on pulseHeight {
-                running: root.isPlaying
-                loops: Animation.Infinite
+              width: equalizer.columnWidth
+              height: equalizer.baselineHeight
+                + level * (equalizer.height - equalizer.baselineHeight)
+              radius: width / 2
+              anchors.bottom: parent.bottom
+              color: {
+                if (!root.visualizerAvailable || !root.visualizerLive || level <= 0)
+                  return root.barMutedColor
+                var mix = Math.max(0, Math.min(1, (level - 0.25) / 0.75))
+                return root.mixColor(root.barTextColor, root.barActiveColor, mix)
+              }
+              opacity: root.visualizerAvailable
+                ? 0.55 + (index / (equalizer.columnCount - 1)) * 0.45
+                : 0.28
 
-                PauseAnimation { duration: 40 + index * 55 }
+              Behavior on height {
+                enabled: root.visualizerMonitoring
+
                 NumberAnimation {
-                  to: peakHeight
-                  duration: 170 + index * 25
-                  easing.type: Easing.OutQuad
-                }
-                NumberAnimation {
-                  to: middleHeight
-                  duration: 150 + (3 - index) * 30
-                  easing.type: Easing.InOutQuad
-                }
-                NumberAnimation {
-                  to: restingHeight
-                  duration: 220 + index * 20
-                  easing.type: Easing.InQuad
+                  duration: 45
+                  easing.type: Easing.OutCubic
                 }
               }
             }
@@ -165,6 +189,7 @@ BarWidget {
         readonly property string marqueeText: root.title + (root.artist ? "  ·  " + root.artist : "")
         readonly property real textGap: Style.space(24)
         readonly property real travelDistance: labelText.implicitWidth + textGap
+        readonly property bool overflowing: labelText.implicitWidth > width
         property real scrollOffset: 0
 
         width: Math.min(root.maxLabelWidth, Math.max(Style.space(110), labelText.implicitWidth))
@@ -177,7 +202,7 @@ BarWidget {
           id: labelText
           x: -scrollClip.scrollOffset
           text: scrollClip.marqueeText
-          color: root.musicHighlight
+          color: root.barTextColor
           font.family: root.bar.fontFamily
           font.pixelSize: Style.font.body
           anchors.verticalCenter: parent.verticalCenter
@@ -188,18 +213,20 @@ BarWidget {
         Text {
           x: labelText.x + labelText.implicitWidth + scrollClip.textGap
           text: scrollClip.marqueeText
-          color: root.musicHighlight
+          color: root.barTextColor
           font.family: root.bar.fontFamily
           font.pixelSize: Style.font.body
           anchors.verticalCenter: parent.verticalCenter
+          visible: scrollClip.overflowing
         }
 
         SequentialAnimation on scrollOffset {
           id: scrollSequence
-          running: scrollClip.visible && !root.popupOpen && !root.bar.vertical
+          running: scrollClip.visible && scrollClip.overflowing && !root.popupOpen && !root.bar.vertical
           loops: Animation.Infinite
           onRunningChanged: if (!running) scrollClip.scrollOffset = 0
 
+          PauseAnimation { duration: 1200 }
           NumberAnimation {
             from: 0
             to: scrollClip.travelDistance

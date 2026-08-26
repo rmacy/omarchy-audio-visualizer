@@ -1,8 +1,8 @@
 # Spotify Player
 
 A now-playing media chip for the [Omarchy](https://omarchy.org) bar, with
-playback controls, a track popup, and multi-player source switching over
-MPRIS.
+playback controls, a live audio waveform, a track popup, and multi-player
+source switching over MPRIS.
 
 Despite the name, the chip is a **generic MPRIS client**, not a Spotify
 integration. It is optimized for [`spotify_player`](https://github.com/aome510/spotify_player),
@@ -14,8 +14,11 @@ this chip can display it.
 
 ## Features
 
-- **Now-playing chip** in the bar: play/pause glyph, animated equalizer
-  bars while playing, and a scrolling title · artist marquee.
+- **Now-playing chip** in the bar: play/pause glyph, a live temporal
+  waveform while playing, and a scrolling title · artist marquee.
+- **Temporal waveform**: nine columns of recent peak levels sampled from
+  the active player's PipeWire playback stream — real signal data, not a
+  looping animation (see [Waveform](#waveform)).
 - **Quick controls from the bar** without opening anything (see
   [Controls](#controls)).
 - **Track popup** with album art, title, artist, album, and
@@ -81,6 +84,32 @@ so Omarchy's stock media-key bindings (`playPause`, `next`, `previous`,
 `play`, `pause`, plus `status` and `ping`) continue to work unchanged
 while this plugin is enabled.
 
+## Waveform
+
+The chip draws a compact **temporal waveform**: nine columns holding a
+short history of the active player's audio peak level, oldest to newest.
+It reflects what the audio is actually doing right now — it is not a
+looping decoration.
+
+- **Native PipeWire peak monitor**: the service attaches one of
+  Quickshell's `PwNodePeakMonitor` objects to the PipeWire playback
+  stream that belongs to the active MPRIS player and samples its PCM
+  peak every 40 ms. This is the shell's own monitor type, so the plugin
+  adds no dependency and spawns no helper process.
+- **One monitor, every bar**: the monitor lives in the headless service,
+  and every bar instance on every monitor reads the same published
+  levels — bars never instantiate their own monitors.
+
+Each column is the stream's recent peak level over time, shaped by a
+fast-attack / slow-release envelope (24 ms up, 110 ms down) so movement
+reads naturally. Peaks below a small gate snap to zero. Silence drains the
+short history and settles at rest; pausing or losing the matched stream
+clears it immediately. In every case, the waveform stops moving at zero.
+
+This is not an FFT and not a frequency-band display: the columns answer
+"how strong was the signal, and when", not "which frequencies it
+contained".
+
 ## Uninstall
 
 ```bash
@@ -93,12 +122,13 @@ bar position and media-key bindings intact.
 
 ## Files
 
-| File             | Purpose                                                          |
-|------------------|------------------------------------------------------------------|
-| `manifest.json`  | Plugin identity, entrypoints, widget metadata, replacement rules |
-| `Service.qml`    | Headless MPRIS service: player tracking, actions, `media` IPC     |
-| `BarWidget.qml`  | The bar chip, marquee, tooltip, and track/source popup            |
-| `MediaModel.js`  | Pure helpers shared by the service and widget                     |
+| File                      | Purpose                                                          |
+|---------------------------|------------------------------------------------------------------|
+| `manifest.json`           | Plugin identity, entrypoints, widget metadata, replacement rules |
+| `Service.qml`             | Headless MPRIS service: player tracking, actions, `media` IPC     |
+| `BarWidget.qml`           | The bar chip, marquee, tooltip, and track/source popup            |
+| `MediaModel.js`           | Pure helpers shared by the service and widget                     |
+| `AudioVisualizerModel.js` | Pure peak-envelope and waveform-history math for the service      |
 
 ## Development
 
@@ -106,6 +136,13 @@ After editing, check the plugin still validates:
 
 ```bash
 omarchy plugin validate .
+```
+
+The waveform's pure logic (`AudioVisualizerModel.js`) has a focused,
+dependency-free test:
+
+```bash
+node tests/AudioVisualizerModel.test.js
 ```
 
 Reload live with `omarchy-shell shell rescanPlugins`.
