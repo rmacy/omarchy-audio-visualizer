@@ -20,6 +20,10 @@ Item {
   // round trip. The player remains authoritative after the bounded timeout.
   property var playbackIntents: ({})
   readonly property int playbackIntentTimeoutMs: 1200
+  // One source transfer may wait for the selected target's authoritative
+  // MPRIS Playing signal before the outgoing source is paused.
+  property var pendingSourceHandoff: null
+  readonly property int sourceHandoffTimeoutMs: 2000
 
   readonly property var players: Mpris.players ? Mpris.players.values : []
   readonly property var nodes: Pipewire.nodes ? Pipewire.nodes.values : []
@@ -81,8 +85,9 @@ Item {
   property int visualizerFrame: 0
   property string visualizerError: ""
   property bool cavaStopRequested: false
-  // Keep a just-used analyzer warm long enough for a two-step source pick or
-  // quick resume, then stop it so paused media has no unbounded FFT cost.
+  // Keep a just-used analyzer warm long enough for a confirmed source
+  // handoff or quick resume, then stop it so paused media has no
+  // unbounded FFT cost.
   readonly property int cavaLingerMs: 5000
 
   function isProxyPlayer(player) {
@@ -117,6 +122,10 @@ Item {
 
   function canCycleSource(player) {
     return MediaModel.canCycleSource(player)
+  }
+
+  function sourceIsSelectable(player) {
+    return MediaModel.sourceIsSelectable(player, isEffectivelyPlaying(player))
   }
 
   function nodeProps(node) {
@@ -191,16 +200,18 @@ Item {
     schedulePlaybackIntentExpiry()
   }
 
-  function recordPlaybackIntent(player, playing) {
+  function recordPlaybackIntent(player, playing, timeoutMs) {
     var key = playerKey(player)
     if (!key) return
 
+    var duration = typeof timeoutMs === "number" && timeoutMs > 0
+      ? timeoutMs : playbackIntentTimeoutMs
     var next = {}
     for (var existing in playbackIntents)
       next[existing] = playbackIntents[existing]
     next[key] = {
       playing: !!playing,
-      expiresAt: Date.now() + playbackIntentTimeoutMs
+      expiresAt: Date.now() + duration
     }
     playbackIntents = next
     schedulePlaybackIntentExpiry()
@@ -271,7 +282,7 @@ Item {
     var list = []
     for (var i = 0; i < players.length; i++) {
       var p = players[i]
-      if (hasMetadata(p) && !isBackgroundPlayer(p)) list.push(p)
+      if (sourceIsSelectable(p) && !isBackgroundPlayer(p)) list.push(p)
     }
 
     list.sort(function(a, b) {
@@ -445,45 +456,151 @@ Item {
     trackOsdTimer.restart()
   }
 
-  function transferPlaybackBetween(current, next, enabled) {
-    return MediaModel.transferPlayback(current, next, enabled,
-      function(target) { return root.playPlayer(target) },
-      function(target) { return root.pausePlayer(target) })
+  function clearSourceHandoff() {
+    sourceHandoffTimer.stop()
+    pendingSourceHandoff = null
   }
 
-  // An explicit row click is a two-step selection: it pauses whatever is
-  // currently playing but never starts the clicked target — the user
-  // presses Play afterwards. transferPlaybackBetween (used by
-  // switchSource) keeps its safe auto-transfer policy unchanged.
-  function commitSourceSelectionBetween(current, next, enabled) {
-    return MediaModel.commitSourceSelection(current, next, enabled,
-      function(target) { return root.pausePlayer(target) },
-      isEffectivelyPlaying(current))
+  function rollbackSourceHandoff(handoff) {
+    if (!handoff || preferredPlayerKey !== handoff.toKey) return
+    var outgoing = playerForKey(handoff.fromKey)
+    preferredPlayerKey = outgoing ? handoff.fromKey : ""
   }
 
+  function cancelSourceHandoff(cancelTarget, rollbackSelection) {
+    var handoff = pendingSourceHandoff
+    if (!handoff) return
 
-  function selectPlayer(key, pauseCurrent) {
-    var player = playerForKey(key)
-    if (!player || isBackgroundPlayer(player) || !hasMetadata(player)) return false
+    clearSourceHandoff()
+    if (cancelTarget) {
+      var target = playerForKey(handoff.toKey)
+      if (target && isEffectivelyPlaying(target)) pausePlayer(target)
+    }
+    if (rollbackSelection) rollbackSourceHandoff(handoff)
+  }
+
+  function confirmSourceHandoff(player) {
+    var handoff = pendingSourceHandoff
+    if (!MediaModel.sourceHandoffConfirmed(handoff, player)) return false
+
+    clearSourceHandoff()
+    var outgoing = playerForKey(handoff.fromKey)
+    if (outgoing && playerKey(outgoing) !== handoff.toKey
+        && isEffectivelyPlaying(outgoing))
+      pausePlayer(outgoing)
+    return true
+  }
+
+  function handleSourceHandoffTimeout() {
+    var handoff = pendingSourceHandoff
+    if (!handoff) return
+
+    var target = playerForKey(handoff.toKey)
+    if (target && target.isPlaying) {
+      confirmSourceHandoff(target)
+      return
+    }
+
+    clearSourceHandoff()
+    rollbackSourceHandoff(handoff)
+  }
+
+  function reconcileSourceHandoff() {
+    var handoff = pendingSourceHandoff
+    if (!handoff) return
+
+    var target = playerForKey(handoff.toKey)
+    if (!target) {
+      clearSourceHandoff()
+      rollbackSourceHandoff(handoff)
+      return
+    }
+    if (confirmSourceHandoff(target)) return
+
+    // With no outgoing source left there is nothing to defer; the target's
+    // already-issued play request may finish on its own.
+    if (!playerForKey(handoff.fromKey)) clearSourceHandoff()
+  }
+
+  function currentSourceForHandoff(targetKey) {
     var current = activePlayer
-    preferredPlayerKey = playerKey(player)
-    commitSourceSelectionBetween(current, player, pauseCurrent)
+    if (current && playerKey(current) !== targetKey
+        && isEffectivelyPlaying(current))
+      return current
+
+    var list = sourcePlayers
+    for (var i = 0; i < list.length; i++) {
+      var candidate = list[i]
+      if (playerKey(candidate) !== targetKey
+          && isEffectivelyPlaying(candidate))
+        return candidate
+    }
+    return current && playerKey(current) === targetKey ? current : null
+  }
+
+  // A row click is a one-click, confirmation-driven handoff. The target is
+  // selected and started immediately, but the outgoing source stays audible
+  // until the target's authoritative MPRIS state reports Playing.
+  function selectPlayer(key, transferPlayback) {
+    var player = playerForKey(key)
+    if (!player || isBackgroundPlayer(player) || !sourceIsSelectable(player)) return false
+
+    var targetKey = playerKey(player)
+    var previous = pendingSourceHandoff
+    var current = previous
+      ? playerForKey(previous.fromKey)
+      : currentSourceForHandoff(targetKey)
+
+    if (previous) {
+      if (previous.toKey === targetKey) return true
+      cancelSourceHandoff(true, false)
+    }
+
+    preferredPlayerKey = targetKey
+    if (!transferPlayback) return true
+
+    var plan = MediaModel.sourceHandoffPlan(
+      current, player, true, isEffectivelyPlaying(current),
+      !!player.isPlaying, isEffectivelyPlaying(player))
+
+    if (plan.pauseCurrent && current) pausePlayer(current)
+
+    if (plan.waitForTarget) {
+      pendingSourceHandoff = {
+        fromKey: playerKey(current),
+        toKey: targetKey
+      }
+      sourceHandoffTimer.restart()
+    }
+
+    if (plan.startTarget && !playPlayer(player,
+        plan.waitForTarget ? sourceHandoffTimeoutMs : playbackIntentTimeoutMs)) {
+      if (plan.waitForTarget) {
+        var failed = pendingSourceHandoff
+        clearSourceHandoff()
+        rollbackSourceHandoff(failed)
+      }
+      return false
+    }
+
+    if (plan.waitForTarget && player.isPlaying)
+      confirmSourceHandoff(player)
     return true
   }
 
   // All callers share the same optimistic state overlay. MPRIS remains the
   // authority, but the UI and rapid follow-up clicks do not wait for its
   // asynchronous PropertiesChanged signal.
-  function performPlayerAction(player, action) {
+  function performPlayerAction(player, action, intentTimeoutMs) {
     var handled = MediaModel.performPlaybackAction(
       player, action, isEffectivelyPlaying(player))
     if (handled && (action === "play" || action === "pause"))
-      recordPlaybackIntent(player, action === "play")
+      recordPlaybackIntent(player, action === "play", intentTimeoutMs)
     return handled
   }
 
-  function playPlayer(player) {
-    return performPlayerAction(player, "play")
+  function playPlayer(player, intentTimeoutMs) {
+    return performPlayerAction(player, "play", intentTimeoutMs)
   }
 
   function pausePlayer(player) {
@@ -504,17 +621,14 @@ Item {
     }
 
     index = (index + delta + list.length) % list.length
-    var current = activePlayer
     var next = list[index]
-
-    preferredPlayerKey = playerKey(next)
-    transferPlaybackBetween(current, next, transferPlayback)
+    var selected = selectPlayer(playerKey(next), transferPlayback)
 
     if (showFeedback !== false) Qt.callLater(function() {
       root.showOsd("Source", "media-source", next)
     })
 
-    return true
+    return selected
   }
 
   function playerForAction(action, targetKey) {
@@ -580,7 +694,10 @@ Item {
     root.syncPlayingOrder()
     root.syncArtwork()
   }
-  onPlayersChanged: root.syncPlayingOrder()
+  onPlayersChanged: {
+    root.syncPlayingOrder()
+    root.reconcileSourceHandoff()
+  }
   onVisualizerWantedChanged: root.syncVisualizer()
   // Every player, track, or candidate-artwork transition invalidates the
   // whole pipeline: artUrl clears immediately and any in-flight request dies.
@@ -596,6 +713,7 @@ Item {
       target: modelData
       function onIsPlayingChanged() {
         root.settlePlaybackIntent(modelData)
+        root.confirmSourceHandoff(modelData)
         root.syncPlayingOrder()
       }
     }
@@ -606,6 +724,13 @@ Item {
     interval: root.playbackIntentTimeoutMs
     repeat: false
     onTriggered: root.expirePlaybackIntents()
+  }
+
+  Timer {
+    id: sourceHandoffTimer
+    interval: root.sourceHandoffTimeoutMs
+    repeat: false
+    onTriggered: root.handleSourceHandoffTimeout()
   }
 
   Timer {

@@ -96,7 +96,7 @@ Manual alternative: clone or copy this folder to
 | Scroll up on chip          | Previous track                           |
 | Scroll down on chip        | Next track                               |
 | Popup buttons              | Previous / play-pause / next             |
-| Popup source list          | Select the active player (pauses the old playing source; press Play if the target is paused) |
+| Popup source list          | Start/select that source, then pause the outgoing source after confirmation |
 | Hover chip                 | Full "title — artist" tooltip            |
 
 Play/Pause from the chip and the popup is **state-aware**: the control
@@ -105,36 +105,40 @@ already-playing player (or pause on an already-paused one) is a no-op —
 it never blindly toggles an already-satisfied state. When the source
 supports MPRIS toggling, the control sends a single `PlayPause` to reach
 the desired state; sources without toggle support get the dedicated
-`Play` or `Pause` call instead. Selecting a source never plays anything;
-its one action — pausing the outgoing playing source — runs through the
-same state-aware path.
+`Play` or `Pause` call instead. Source handoffs use the same state-aware
+actions: the target receives Play first and the outgoing source receives
+Pause only after the target confirms playback.
 
 Control feedback is immediate: after a successful MPRIS call, the service
 renders the requested play/pause state while it waits for the player's
 asynchronous property update. The player remains authoritative; an
-unconfirmed intent expires after 1.2 seconds. Calls still go directly from
-Quickshell to MPRIS. A Rust subprocess or daemon would add another IPC hop,
-duplicate player state, and complicate plugin distribution without removing
-the MPRIS round trip.
+unconfirmed ordinary action expires after 1.2 seconds and a source handoff
+after 2 seconds. Calls still go directly from Quickshell to MPRIS. A Rust
+subprocess or daemon would add another IPC hop, duplicate player state, and
+complicate plugin distribution without removing the MPRIS round trip.
 
 ## Source selection
 
 With multiple players running, right-click the chip and pick a source in
-the popup. Sources can also be cycled without the mouse through the
-service's IPC: `sourceNext`, `sourcePrevious`, `sourceSwitch`, and
-`sourceSwitchPrevious` (for example,
-`omarchy-shell media sourceNext`). The cycle commands may transfer
-playback to the newly selected player as part of the switch.
+the popup. A row click is a one-click, confirmation-driven handoff: the
+clicked source becomes selected immediately and receives one state-aware
+Play action. The outgoing source stays audible until the clicked player's
+authoritative MPRIS state reports `Playing`; only then does it receive
+Pause. A target that cannot start or disappears therefore never silences
+the working source, and the selection rolls back after two seconds.
 
-Clicking a source row is deliberately selection-first. The click always
-commits that source — the clicked player becomes the one the chip follows
-— and, when another source is playing, pauses only that old playing
-source. The click never starts the target. A paused target stays active
-but paused, your explicit pick outranking generic paused stream
-candidates, until you press Play on the chip or in the popup. A target
-that was already playing remains playing. Clicking the already-active
-source, or any source while nothing is playing, changes only which player
-the chip follows; no play or pause is issued.
+Stopped identity-only MPRIS endpoints that advertise neither Play nor
+PlayPause are not shown as sources: no valid plugin action can start them.
+Paused YouTube sessions remain listed when Chromium advertises Play.
+
+An already-playing target transfers immediately without another Play
+call. Clicking the selected paused source starts it. A newer row click
+supersedes an in-flight handoff and cancels the prior target request.
+
+Sources can also be cycled through IPC: `sourceNext` and
+`sourcePrevious` select without transferring playback, while
+`sourceSwitch` and `sourceSwitchPrevious` use the same confirmed handoff
+(for example, `omarchy-shell media sourceSwitch`).
 
 ## Media keys
 
@@ -159,8 +163,8 @@ doing right now — it is not a looping decoration.
   published levels — bars never spawn their own analyzers.
 - **Low-latency lifecycle**: hovering the chip or opening the popup
   prewarms Cava. Pause clears the bars immediately but keeps that one
-  process warm for at most five seconds, covering quick resume and the
-  two-step source workflow without paying Cava's startup cost again.
+  process warm for at most five seconds, covering quick resume and a
+  confirmed source handoff without paying Cava's startup cost again.
   After the window it stops completely. Cava's own sleep polling is
   disabled only during this bounded lifetime, so active playback cannot
   wait up to a second for the analyzer to wake.

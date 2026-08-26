@@ -105,45 +105,57 @@ function performPlaybackAction(player, action, playingState) {
   return false
 }
 
+function sourceIsSelectable(player, playingState) {
+  if (!player || !hasMetadata(player)) return false
+  var playing = typeof playingState === "boolean"
+    ? playingState : !!player.isPlaying
+  return playing || canHandleAction(player, "play")
+}
+
 function canCycleSource(player) {
-  return !!(player && hasMetadata(player) && (player.isPlaying || player.canPlay))
+  return sourceIsSelectable(player)
 }
 
-// Transfers playback from `current` to `next` through the injected
-// playFn/pauseFn so callers share one implementation. Runs only when
-// transfer was explicitly requested, the sources differ, and current is
-// playing. A paused target is started first; current is paused only once
-// the target is already playing or started successfully, so a target that
-// cannot start never silences current playback. Returns whether the
-// transfer ran.
-function transferPlayback(current, next, enabled, playFn, pauseFn) {
-  if (!enabled || !current || !current.isPlaying) return false
-  if (!next || playerKey(next) === playerKey(current)) return false
+// Plans a source-row click without issuing player calls. A paused target is
+// started first. When another source is playing, that source is paused only
+// after MPRIS confirms the target is actually playing; this prevents a failed
+// target start from silencing current audio. `nextRequestedPlaying` separates
+// an in-flight optimistic Play from authoritative target playback.
+function sourceHandoffPlan(current, next, enabled, currentPlaying,
+                           nextPlaying, nextRequestedPlaying) {
+  var valid = !!enabled && !!next
+  if (!valid) {
+    return {
+      valid: false,
+      startTarget: false,
+      pauseCurrent: false,
+      waitForTarget: false
+    }
+  }
 
-  var nextStarted = next.isPlaying || (playFn ? playFn(next) : false)
-  if (!nextStarted) return false
-
-  if (pauseFn) pauseFn(current)
-  return true
-}
-
-// Commits an explicit selection of `next` over the playing `current`
-// through the injected pauseFn. Two-step by design: the selection only
-// pauses the previously playing source — the target is never sent play
-// or playPause, so a UI row click can never start audio on its own; the
-// user presses Play afterwards, and the preferred (paused) target then
-// outranks generic paused stream candidates. Guards match transferPlayback:
-// nothing runs unless the selection was requested, current is effectively
-// playing, and the sources differ. `currentPlaying`, when supplied, covers
-// the short interval before MPRIS confirms a preceding Play call. Returns
-// whether the pause method reported success.
-function commitSourceSelection(current, next, enabled, pauseFn, currentPlaying) {
-  var isCurrentPlaying = current && (typeof currentPlaying === "boolean"
+  var currentState = !!current && (typeof currentPlaying === "boolean"
     ? currentPlaying : !!current.isPlaying)
-  if (!enabled || !current || !isCurrentPlaying) return false
-  if (!next || playerKey(next) === playerKey(current)) return false
+  var nextState = typeof nextPlaying === "boolean"
+    ? nextPlaying : !!next.isPlaying
+  var nextRequested = typeof nextRequestedPlaying === "boolean"
+    ? nextRequestedPlaying : nextState
+  var samePlayer = !!current
+    && playerKey(current) === playerKey(next)
 
-  return !!(pauseFn && pauseFn(current))
+  return {
+    valid: true,
+    startTarget: !nextRequested,
+    pauseCurrent: !samePlayer && currentState && nextState,
+    waitForTarget: !samePlayer && currentState && !nextState
+  }
+}
+
+function sourceHandoffConfirmed(pending, player) {
+  return !!pending
+    && !!pending.toKey
+    && !!player
+    && !!player.isPlaying
+    && playerKey(player) === pending.toKey
 }
 
 function nodeProps(node) {
@@ -261,8 +273,9 @@ if (typeof module !== "undefined") {
     effectivePlaying: effectivePlaying,
     performPlaybackAction: performPlaybackAction,
     canCycleSource: canCycleSource,
-    transferPlayback: transferPlayback,
-    commitSourceSelection: commitSourceSelection,
+    sourceIsSelectable: sourceIsSelectable,
+    sourceHandoffPlan: sourceHandoffPlan,
+    sourceHandoffConfirmed: sourceHandoffConfirmed,
     nodeProps: nodeProps,
     isPlaybackStream: isPlaybackStream,
     streamLabelKey: streamLabelKey,
