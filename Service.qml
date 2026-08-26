@@ -64,7 +64,7 @@ Item {
   readonly property string cavaConfigPath: manifest && manifest.__sourceDir ? String(manifest.__sourceDir) + "/cava.conf" : ""
   property bool cavaAvailable: false
   readonly property bool visualizerAvailable: cavaAvailable && cavaConfigPath !== ""
-  readonly property bool visualizerWanted: visualizerAvailable && activePlayer !== null && activePlayer.isPlaying
+  readonly property bool visualizerWanted: MediaModel.visualizerShouldRun(activePlayer, visualizerAvailable)
   readonly property bool visualizerMonitoring: visualizerWanted && cavaProcess.running
   readonly property int visualizerLevelCount: 9
   readonly property int cavaMaxRange: 1000
@@ -385,26 +385,15 @@ Item {
     return true
   }
 
+  // Thin injection points for transfer/commit; the real logic lives in
+  // MediaModel.performPlaybackAction so every play/pause in the service
+  // shares one capability-guarded implementation.
   function playPlayer(player) {
-    if (!player) return false
-    if (player.canPlay) {
-      player.play()
-      return true
-    }
-    return false
+    return MediaModel.performPlaybackAction(player, "play")
   }
 
   function pausePlayer(player) {
-    if (!player) return false
-    if (player.canPause) {
-      player.pause()
-      return true
-    }
-    if (player.canTogglePlaying && player.isPlaying) {
-      player.togglePlaying()
-      return true
-    }
-    return false
+    return MediaModel.performPlaybackAction(player, "pause")
   }
 
   function switchSource(delta, transferPlayback, showFeedback) {
@@ -459,56 +448,30 @@ Item {
     var actionLabel = "Play/pause"
     var iconName = "media"
     var beforeTrackSignature = trackSignature(player)
-    var handled = false
+    // playPause is normalized here to an explicit play or pause for the
+    // selected player; every action then runs through the single
+    // performPlaybackAction implementation in MediaModel.
+    var effective = action
 
     if (action === "next") {
       actionLabel = "Next"
       iconName = "media-next"
-      if (player && player.canGoNext) {
-        player.next()
-        handled = true
-      }
     } else if (action === "previous") {
       actionLabel = "Previous"
       iconName = "media-previous"
-      if (player && player.canGoPrevious) {
-        player.previous()
-        handled = true
-      }
     } else if (action === "play") {
       actionLabel = "Play"
       iconName = "media-play"
-      if (player && player.canPlay) {
-        player.play()
-        handled = true
-      } else if (player && player.canTogglePlaying && !player.isPlaying) {
-        player.togglePlaying()
-        handled = true
-      }
     } else if (action === "pause") {
       actionLabel = "Pause"
       iconName = "media-pause"
-      if (player && player.canPause) {
-        player.pause()
-        handled = true
-      } else if (player && player.canTogglePlaying && player.isPlaying) {
-        player.togglePlaying()
-        handled = true
-      }
     } else if (action === "playPause") {
-      actionLabel = player && player.isPlaying ? "Pause" : "Play"
-      iconName = player && player.isPlaying ? "media-pause" : "media-play"
-      if (player && player.isPlaying && player.canPause) {
-        player.pause()
-        handled = true
-      } else if (player && !player.isPlaying && player.canPlay) {
-        player.play()
-        handled = true
-      } else if (player && player.canTogglePlaying) {
-        player.togglePlaying()
-        handled = true
-      }
+      effective = player && player.isPlaying ? "pause" : "play"
+      actionLabel = effective === "pause" ? "Pause" : "Play"
+      iconName = effective === "pause" ? "media-pause" : "media-play"
     }
+
+    var handled = MediaModel.performPlaybackAction(player, effective)
 
     if (handled && key) preferredPlayerKey = key
     if (showFeedback !== false)

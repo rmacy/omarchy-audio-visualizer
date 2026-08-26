@@ -10,6 +10,8 @@
 //   - MediaModel.playbackStreamForPlayer / playerHasPlaybackStream
 //   - MediaModel.transferPlayback (explicit source-switch handoff)
 //   - MediaModel.commitSourceSelection (explicit row-click selection commit)
+//   - MediaModel.performPlaybackAction (explicit play/pause/next/previous execution)
+//   - MediaModel.visualizerShouldRun (visualizer wanted-state predicate)
 //
 // Expected spectra are recomputed here from the documented pipeline with
 // literal constants (floor 0.008, gamma 0.72, live 0.02) so any drift in the
@@ -611,6 +613,338 @@ commitRefusals.forEach(function (scenario) {
     assert.strictEqual(started, false, "a refused selection reports false");
     assert.deepStrictEqual(log, [], "a refused selection must issue no playback actions");
   });
+});
+
+// ---------------------------------------------------------------------------
+// MediaModel.performPlaybackAction
+// ---------------------------------------------------------------------------
+
+test("MediaModel exports performPlaybackAction and visualizerShouldRun", function () {
+  assert.strictEqual(typeof MediaModel.performPlaybackAction, "function",
+    "performPlaybackAction must be exported");
+  assert.strictEqual(typeof MediaModel.visualizerShouldRun, "function",
+    "visualizerShouldRun must be exported");
+});
+
+// Builds a player whose MPRIS methods are spies appending { action, player }
+// to `log`; play/pause/toggle mirror isPlaying the way the real bus would.
+// performPlaybackAction invokes these methods directly on the player, so the
+// log pins exactly which method ran, on whom, and in what order.
+function spyPlayer(log, key, capabilities) {
+  var caps = capabilities || ({});
+  var player = {
+    dbusName: "org.mpris.MediaPlayer2." + key,
+    isPlaying: !!caps.isPlaying,
+    canPlay: !!caps.canPlay,
+    canPause: !!caps.canPause,
+    canGoNext: !!caps.canGoNext,
+    canGoPrevious: !!caps.canGoPrevious,
+    canTogglePlaying: !!caps.canTogglePlaying
+  };
+  player.next = function () {
+    log.push({ action: "next", player: key });
+    return true;
+  };
+  player.previous = function () {
+    log.push({ action: "previous", player: key });
+    return true;
+  };
+  player.play = function () {
+    log.push({ action: "play", player: key });
+    player.isPlaying = true;
+    return true;
+  };
+  player.pause = function () {
+    log.push({ action: "pause", player: key });
+    player.isPlaying = false;
+    return true;
+  };
+  player.togglePlaying = function () {
+    log.push({ action: "toggle", player: key });
+    player.isPlaying = !player.isPlaying;
+    return true;
+  };
+  return player;
+}
+
+test("performPlaybackAction runs next only behind canGoNext", function () {
+  var log = [];
+  var capable = spyPlayer(log, "spotify", { canGoNext: true });
+
+  assert.strictEqual(MediaModel.performPlaybackAction(capable, "next"), true,
+    "a capable player reports that the action ran");
+  assert.deepStrictEqual(log, [{ action: "next", player: "spotify" }],
+    "next must invoke the player's next callback and nothing else");
+
+  var incapable = spyPlayer(log, "chrome", {});
+  assert.strictEqual(MediaModel.performPlaybackAction(incapable, "next"), false,
+    "a player without canGoNext reports that nothing ran");
+  assert.deepStrictEqual(log, [{ action: "next", player: "spotify" }],
+    "an incapable player must never receive next");
+});
+
+test("performPlaybackAction runs previous only behind canGoPrevious", function () {
+  var log = [];
+  var capable = spyPlayer(log, "spotify", { canGoPrevious: true });
+
+  assert.strictEqual(MediaModel.performPlaybackAction(capable, "previous"), true,
+    "a capable player reports that the action ran");
+  assert.deepStrictEqual(log, [{ action: "previous", player: "spotify" }],
+    "previous must invoke the player's previous callback and nothing else");
+
+  var incapable = spyPlayer(log, "chrome", {});
+  assert.strictEqual(MediaModel.performPlaybackAction(incapable, "previous"), false,
+    "a player without canGoPrevious reports that nothing ran");
+  assert.deepStrictEqual(log, [{ action: "previous", player: "spotify" }],
+    "an incapable player must never receive previous");
+});
+
+test("pausing a playing player prefers the dedicated pause method", function () {
+  var log = [];
+  var player = spyPlayer(log, "spotify", {
+    isPlaying: true, canPause: true, canTogglePlaying: true
+  });
+
+  assert.strictEqual(MediaModel.performPlaybackAction(player, "pause"), true);
+  assert.deepStrictEqual(log, [{ action: "pause", player: "spotify" }],
+    "pause must run pause(), never togglePlaying(), when canPause holds");
+  assert.strictEqual(player.isPlaying, false,
+    "the playing state must follow the dedicated pause");
+});
+
+test("pause falls back to togglePlaying only while the player is playing", function () {
+  var log = [];
+  var playing = spyPlayer(log, "spotify", { isPlaying: true, canTogglePlaying: true });
+
+  assert.strictEqual(MediaModel.performPlaybackAction(playing, "pause"), true);
+  assert.deepStrictEqual(log, [{ action: "toggle", player: "spotify" }],
+    "a toggle-only playing player is paused through togglePlaying");
+
+  log = [];
+  var paused = spyPlayer(log, "spotify", { isPlaying: false, canTogglePlaying: true });
+  assert.strictEqual(MediaModel.performPlaybackAction(paused, "pause"), false,
+    "a paused player reports that nothing ran");
+  assert.deepStrictEqual(log, [],
+    "toggle fallback must never fire for a paused player: that would start it");
+});
+
+test("pause without pause or toggle capability is a no-op", function () {
+  var log = [];
+  var player = spyPlayer(log, "spotify", { isPlaying: true });
+
+  assert.strictEqual(MediaModel.performPlaybackAction(player, "pause"), false,
+    "an incapable player reports that nothing ran");
+  assert.deepStrictEqual(log, [], "an incapable player must not be touched");
+});
+
+test("playing a paused player prefers the dedicated play method", function () {
+  var log = [];
+  var player = spyPlayer(log, "spotify", {
+    isPlaying: false, canPlay: true, canTogglePlaying: true
+  });
+
+  assert.strictEqual(MediaModel.performPlaybackAction(player, "play"), true);
+  assert.deepStrictEqual(log, [{ action: "play", player: "spotify" }],
+    "play must run play(), never togglePlaying(), when canPlay holds");
+  assert.strictEqual(player.isPlaying, true,
+    "the playing state must follow the dedicated play");
+});
+
+test("play falls back to togglePlaying only while the player is paused", function () {
+  var log = [];
+  var paused = spyPlayer(log, "spotify", { isPlaying: false, canTogglePlaying: true });
+
+  assert.strictEqual(MediaModel.performPlaybackAction(paused, "play"), true);
+  assert.deepStrictEqual(log, [{ action: "toggle", player: "spotify" }],
+    "a toggle-only paused player is started through togglePlaying");
+
+  log = [];
+  var playing = spyPlayer(log, "spotify", { isPlaying: true, canTogglePlaying: true });
+  assert.strictEqual(MediaModel.performPlaybackAction(playing, "play"), false,
+    "an already playing player reports that nothing ran");
+  assert.deepStrictEqual(log, [],
+    "toggle fallback must never fire for a playing player: that would pause it");
+});
+
+test("performPlaybackAction rejects playPause; callers normalize it first", function () {
+  var log = [];
+  var player = spyPlayer(log, "spotify", {
+    isPlaying: true,
+    canPlay: true,
+    canPause: true,
+    canGoNext: true,
+    canGoPrevious: true,
+    canTogglePlaying: true
+  });
+
+  assert.strictEqual(MediaModel.performPlaybackAction(player, "playPause"), false,
+    "the generic playPause action must be refused by the executor");
+  assert.deepStrictEqual(log, [],
+    "refusing playPause must not touch any player method: the Service normalizes it to play or pause before executing");
+});
+
+var rejectedActions = ["stop", "Play", "PAUSE", "Next", "next ", "", "play-pause", "seek", null, undefined];
+
+rejectedActions.forEach(function (action) {
+  test("performPlaybackAction refuses the unknown action " + JSON.stringify(action), function () {
+    var log = [];
+    var player = spyPlayer(log, "spotify", {
+      isPlaying: true,
+      canPlay: true,
+      canPause: true,
+      canGoNext: true,
+      canGoPrevious: true,
+      canTogglePlaying: true
+    });
+
+    assert.strictEqual(MediaModel.performPlaybackAction(player, action), false,
+      "unknown actions must report that nothing ran");
+    assert.deepStrictEqual(log, [], "unknown actions must not touch any player method");
+  });
+});
+
+test("performPlaybackAction rejects missing players without throwing", function () {
+  assert.strictEqual(MediaModel.performPlaybackAction(null, "play"), false);
+  assert.strictEqual(MediaModel.performPlaybackAction(undefined, "pause"), false);
+  assert.strictEqual(MediaModel.performPlaybackAction(null, "next"), false);
+  assert.strictEqual(MediaModel.performPlaybackAction(undefined, "previous"), false);
+});
+
+// ---------------------------------------------------------------------------
+// MediaModel.visualizerShouldRun
+// ---------------------------------------------------------------------------
+
+var visualizerMatrix = [
+  {
+    name: "an available visualizer and a playing player",
+    player: { isPlaying: true },
+    available: true,
+    expected: true
+  },
+  {
+    name: "an available visualizer but a paused player",
+    player: { isPlaying: false },
+    available: true,
+    expected: false
+  },
+  {
+    name: "an available visualizer but no player at all",
+    player: null,
+    available: true,
+    expected: false
+  },
+  {
+    name: "an unavailable visualizer even while a player plays",
+    player: { isPlaying: true },
+    available: false,
+    expected: false
+  },
+  {
+    name: "an undefined player",
+    player: undefined,
+    available: true,
+    expected: false
+  },
+  {
+    name: "a player without an isPlaying flag",
+    player: {},
+    available: true,
+    expected: false
+  },
+  {
+    name: "an omitted availability flag",
+    player: { isPlaying: true },
+    expected: false
+  }
+];
+
+visualizerMatrix.forEach(function (row) {
+  test("visualizerShouldRun returns " + row.expected + " for " + row.name, function () {
+    assert.strictEqual(MediaModel.visualizerShouldRun(row.player, row.available),
+      row.expected, "the wanted state must be an exact boolean, not a coerced truthy value");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// sequential source-transition scenario
+// ---------------------------------------------------------------------------
+
+// One continuous model walk: Chrome is playing, Spotify is selected
+// explicitly, paused, resumed, and Chrome is switched back to safely. Every
+// playback step routes through performPlaybackAction — including the
+// play/pause handoffs the selection and transfer helpers inject — so the
+// shared log pins the exact action order across the whole sequence while
+// visualizerShouldRun is recomputed after each state change. A regression
+// that toggles instead of pausing, reverses play and pause, or leaves the
+// visualizer wanted while the active player is paused fails here.
+test("chrome playing, spotify selected, paused, resumed, chrome switched back", function () {
+  var log = [];
+  var chrome = spyPlayer(log, "chromium", { isPlaying: true, canPlay: true, canPause: true });
+  var spotify = spyPlayer(log, "spotify", { isPlaying: false, canPlay: true, canPause: true });
+
+  function play(p) {
+    return MediaModel.performPlaybackAction(p, "play");
+  }
+  function pause(p) {
+    return MediaModel.performPlaybackAction(p, "pause");
+  }
+
+  // Chrome is the active player and playing: the visualizer wants to run.
+  var active = chrome;
+  assert.strictEqual(MediaModel.visualizerShouldRun(active, true), true,
+    "the visualizer is wanted while the active player plays");
+
+  // Explicit Spotify selection: the paused target starts strictly before the
+  // playing current is paused.
+  assert.strictEqual(MediaModel.commitSourceSelection(chrome, spotify, true, play, pause),
+    true, "a committed selection reports true");
+  assert.deepStrictEqual(log, [
+    { action: "play", player: "spotify" },
+    { action: "pause", player: "chromium" }
+  ], "selection must start spotify before pausing chrome");
+  log.length = 0;
+
+  active = spotify;
+  assert.strictEqual(spotify.isPlaying, true, "spotify now plays");
+  assert.strictEqual(chrome.isPlaying, false, "chrome is now paused");
+  assert.strictEqual(MediaModel.visualizerShouldRun(active, true), true,
+    "the visualizer follows the newly active playing player");
+
+  // Explicit pause of Spotify: the dedicated method, never a toggle.
+  assert.strictEqual(MediaModel.performPlaybackAction(spotify, "pause"), true);
+  assert.deepStrictEqual(log, [{ action: "pause", player: "spotify" }],
+    "pausing spotify must run pause(), not togglePlaying()");
+  log.length = 0;
+  assert.strictEqual(MediaModel.visualizerShouldRun(active, true), false,
+    "the visualizer must stop being wanted the moment the active player pauses");
+  assert.strictEqual(MediaModel.visualizerShouldRun(active, false), false,
+    "an unavailable visualizer is never wanted, even while playing");
+
+  // Explicit resume of Spotify: the dedicated method, never a toggle.
+  assert.strictEqual(MediaModel.performPlaybackAction(spotify, "play"), true);
+  assert.deepStrictEqual(log, [{ action: "play", player: "spotify" }],
+    "resuming spotify must run play(), not togglePlaying()");
+  log.length = 0;
+  assert.strictEqual(MediaModel.visualizerShouldRun(active, true), true,
+    "the visualizer is wanted again once the active player resumes");
+
+  // Safe switch back: chrome only replaces spotify once it is actually
+  // playing, which is transferPlayback's guarantee.
+  assert.strictEqual(MediaModel.transferPlayback(spotify, chrome, true, play, pause),
+    true, "a completed switch-back reports true");
+  assert.deepStrictEqual(log, [
+    { action: "play", player: "chromium" },
+    { action: "pause", player: "spotify" }
+  ], "switch-back must start chrome before pausing spotify");
+  log.length = 0;
+
+  active = chrome;
+  assert.strictEqual(chrome.isPlaying, true, "chrome plays again");
+  assert.strictEqual(spotify.isPlaying, false, "spotify is paused again");
+  assert.strictEqual(MediaModel.visualizerShouldRun(active, true), true,
+    "the visualizer follows the restored active player");
+  assert.strictEqual(MediaModel.visualizerShouldRun(spotify, true), false,
+    "a paused non-active player never keeps the visualizer wanted");
 });
 
 // ---------------------------------------------------------------------------

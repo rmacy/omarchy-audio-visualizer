@@ -26,6 +26,58 @@ function canHandleAction(player, action) {
   return false
 }
 
+// Single executor for MPRIS playback actions. `action` must be one of
+// next/previous/play/pause; the generic playPause toggle is never accepted
+// here — callers normalize it to an explicit play or pause first. Each
+// action is guarded by the player's capabilities and falls back to
+// togglePlaying() only for players that expose no dedicated method.
+// Returns whether a player method actually ran.
+function performPlaybackAction(player, action) {
+  if (!player) return false
+
+  if (action === "next") {
+    if (player.canGoNext) {
+      player.next()
+      return true
+    }
+    return false
+  }
+
+  if (action === "previous") {
+    if (player.canGoPrevious) {
+      player.previous()
+      return true
+    }
+    return false
+  }
+
+  if (action === "play") {
+    if (player.canPlay) {
+      player.play()
+      return true
+    }
+    if (player.canTogglePlaying && !player.isPlaying) {
+      player.togglePlaying()
+      return true
+    }
+    return false
+  }
+
+  if (action === "pause") {
+    if (player.canPause) {
+      player.pause()
+      return true
+    }
+    if (player.canTogglePlaying && player.isPlaying) {
+      player.togglePlaying()
+      return true
+    }
+    return false
+  }
+
+  return false
+}
+
 function canCycleSource(player) {
   return !!(player && hasMetadata(player) && (player.isPlaying || player.canPlay))
 }
@@ -150,6 +202,13 @@ function trackChanged(previousSignature, player) {
   return trackSignature(player) !== String(previousSignature || "")
 }
 
+// Pure gate for the spectrum analyzer: the visualizer should run only when
+// the backend is available and the given (active) player is playing. Kept
+// free of process state so the wanted/monitoring split stays testable.
+function visualizerShouldRun(player, available) {
+  return !!available && !!player && !!player.isPlaying
+}
+
 function labelFor(player) {
   if (!player) return ""
   return player.trackTitle || player.identity || player.desktopEntry || ""
@@ -169,6 +228,7 @@ if (typeof module !== "undefined") {
     hasTrackMetadata: hasTrackMetadata,
     playerCanControl: playerCanControl,
     canHandleAction: canHandleAction,
+    performPlaybackAction: performPlaybackAction,
     canCycleSource: canCycleSource,
     transferPlayback: transferPlayback,
     commitSourceSelection: commitSourceSelection,
@@ -182,6 +242,7 @@ if (typeof module !== "undefined") {
     playerKey: playerKey,
     trackSignature: trackSignature,
     trackChanged: trackChanged,
+    visualizerShouldRun: visualizerShouldRun,
     labelFor: labelFor,
     osdMessage: osdMessage
   }

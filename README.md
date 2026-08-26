@@ -99,6 +99,10 @@ Manual alternative: clone or copy this folder to
 | Popup source list          | Switch the active player (starts the clicked source when possible; a playing source is paused) |
 | Hover chip                 | Full "title — artist" tooltip            |
 
+Play/Pause from the chip and the popup sends an explicit `Play` or
+`Pause` to the selected source, chosen from that player's current
+state rather than a blind toggle.
+
 ## Source selection
 
 With multiple players running, right-click the chip and pick a source in
@@ -139,15 +143,20 @@ doing right now — it is not a looping decoration.
 - **One process, every bar**: the Cava process lives in the headless
   service, and every bar instance on every monitor reads the same
   published levels — bars never spawn their own analyzers.
-- **Runs only while playing**: the process starts when the active
-  player is actually playing and stops the moment playback pauses or
-  stops. After one second of silent output, Cava's sleep timer suspends
-  FFT work until audio returns. Unexpected exits restart after 2 seconds.
+- **Runs only while playing**: the process starts when the selected
+  source is actually playing; the moment that source pauses or stops,
+  the spectrum stops and the bars clear to zero, and it resumes when
+  playback restarts. After one second of silent output, Cava's sleep
+  timer suspends FFT work until audio returns. Unexpected exits restart
+  after 2 seconds.
 
 Because the FFT taps the default PipeWire output mix rather than one
 player's private stream, the bands show whatever is audible — with
 several players running, the spectrum reflects the whole mix, not the
-selected player alone. Silence or pause settles every band at zero.
+selected player alone. Its on/off state still follows the selected
+source: pausing that player stops the visualizer and clears the bars
+even while other audio remains audible, and restarting playback
+resumes it. Silence or pause settles every band at zero.
 
 Each bar's height is its band's current energy, shaped by a gentle
 `pow(level, 0.72)` curve so quiet material still reads visually.

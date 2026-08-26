@@ -422,7 +422,7 @@ BarWidget {
           bordered: true
           enabled: root.activePlayer && (root.activePlayer.canTogglePlaying || root.activePlayer.canPlay || root.activePlayer.canPause)
           opacity: enabled ? 1.0 : 0.4
-          onClicked: if (root.mediaService) root.mediaService.runAction("playPause", false, root.mediaService.playerKey(root.activePlayer))
+          onClicked: if (root.mediaService) root.mediaService.runAction(root.isPlaying ? "pause" : "play", false, root.mediaService.playerKey(root.activePlayer))
         }
 
         Button {
