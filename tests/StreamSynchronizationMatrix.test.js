@@ -411,41 +411,36 @@ for (const mprisPlaying of [false, true]) {
   for (const linkState of [undefined, null, false, true]) {
     for (const confirmedState of [undefined, false, true]) {
       for (const intentState of [null, false, true]) {
-        for (const toggleResetPending of [false, true]) {
-          test(`MPRIS transition confirmation playing=${mprisPlaying} link=${String(linkState)} confirmed=${String(confirmedState)} intent=${String(intentState)} reset=${toggleResetPending}`, () => {
-            const expected = toggleResetPending && !mprisPlaying
-              ? false
-              : (!mprisPlaying
-                ? !(confirmedState === true
-                  && linkState === true
-                  && intentState === true)
-                : (linkState !== false
-                  && (confirmedState !== false || intentState === true)));
-            assert.equal(
-              MediaModel.mprisTransitionMayConfirmPlaying(
-                mprisPlaying, linkState, confirmedState, intentState,
-                toggleResetPending),
-              expected
-            );
-          });
-        }
+        test(`MPRIS transition confirmation playing=${mprisPlaying} link=${String(linkState)} confirmed=${String(confirmedState)} intent=${String(intentState)}`, () => {
+          const expected = !mprisPlaying
+            ? !(confirmedState === true
+              && linkState === true
+              && intentState === true)
+            : (linkState !== false
+              && (confirmedState !== false || intentState === true));
+          assert.equal(
+            MediaModel.mprisTransitionMayConfirmPlaying(
+              mprisPlaying, linkState, confirmedState, intentState),
+            expected
+          );
+        });
       }
     }
   }
 }
 
-test("Spotify reset ignores its expected stale Paused edge", () => {
+test("Spotify active Play intent ignores stale Paused MPRIS", () => {
   assert.equal(
     MediaModel.mprisTransitionMayConfirmPlaying(
-      false, true, false, true, true),
+      false, true, true, true),
     false
   );
 });
 
-test("real Spotify Pause wins after reset Play intent is replaced", () => {
+test("real Spotify Pause wins after Play intent is replaced", () => {
   assert.equal(
     MediaModel.mprisTransitionMayConfirmPlaying(
-      false, true, true, false, false),
+      false, true, true, false),
     true
   );
 });

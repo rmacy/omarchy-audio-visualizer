@@ -256,7 +256,7 @@ test("generic players prefer idempotent dedicated methods over toggle", () => {
   assert.deepEqual(pauseFixture.log, ["pause"]);
 });
 
-test("spotify-player uses guarded toggle for Play but dedicated Pause", () => {
+test("spotify-player uses idempotent dedicated Play and Pause", () => {
   const playFixture = actionPlayer({
     dbusName: "org.mpris.MediaPlayer2.spotify_player",
     isPlaying: false,
@@ -264,9 +264,8 @@ test("spotify-player uses guarded toggle for Play but dedicated Pause", () => {
     canPlay: true,
     canPause: true
   });
-  assert.equal(MediaModel.playerRequiresTogglePlay(playFixture.player), true);
   assert.equal(MediaModel.performPlaybackAction(playFixture.player, "play"), true);
-  assert.deepEqual(playFixture.log, ["toggle"]);
+  assert.deepEqual(playFixture.log, ["play"]);
 
   const alreadyPlaying = actionPlayer({
     dbusName: "org.mpris.MediaPlayer2.spotify_player",
@@ -274,8 +273,8 @@ test("spotify-player uses guarded toggle for Play but dedicated Pause", () => {
     canTogglePlaying: true,
     canPlay: true
   });
-  assert.equal(MediaModel.performPlaybackAction(alreadyPlaying.player, "play"), false);
-  assert.deepEqual(alreadyPlaying.log, []);
+  assert.equal(MediaModel.performPlaybackAction(alreadyPlaying.player, "play"), true);
+  assert.deepEqual(alreadyPlaying.log, ["play"]);
 
   const pauseFixture = actionPlayer({
     dbusName: "org.mpris.MediaPlayer2.spotify_player",
@@ -334,14 +333,11 @@ for (const profile of suppressionProfiles) {
     for (const intentState of [null, false, true]) {
       for (const confirmedPlaying of [false, true]) {
         test(`pending action suppression profile=${profile.name} action=${action} intent=${intentState} confirmed=${confirmedPlaying}`, () => {
-          const requiresTogglePlay = profile.name === "spotify-player";
-          const expected = action === "play"
-            ? intentState === true && !confirmedPlaying && requiresTogglePlay
-            : (action === "pause"
-              ? intentState === false
-                && confirmedPlaying
-                && !profile.player.canPause
-              : false);
+          const expected = action === "pause"
+            ? intentState === false
+              && confirmedPlaying
+              && !profile.player.canPause
+            : false;
           assert.equal(
             MediaModel.shouldSuppressPendingPlaybackAction(
               profile.player, action, intentState, confirmedPlaying),
@@ -377,10 +373,10 @@ test("repeated dedicated Pause is idempotently dispatched", () => {
 
 const dedicatedStateCases = [
   {
-    name: "Chromium Play",
+    name: "Chromium Play waits for stream confirmation",
     player: { dbusName: "org.mpris.MediaPlayer2.chromium", canPlay: true },
     action: "play",
-    expected: true
+    expected: null
   },
   {
     name: "Chromium Pause",
@@ -389,7 +385,7 @@ const dedicatedStateCases = [
     expected: false
   },
   {
-    name: "Spotify toggle Play waits for confirmation",
+    name: "Spotify dedicated Play waits for stream confirmation",
     player: {
       dbusName: "org.mpris.MediaPlayer2.spotify_player",
       canPlay: true,
@@ -443,21 +439,50 @@ dedicatedStateCases.forEach(row => {
   });
 });
 
-test("toggle Play reset is limited to fully controllable spotify-player", () => {
-  assert.equal(MediaModel.playerNeedsTogglePlayReset({
+for (const canPlay of [false, true]) {
+  for (const intentState of [null, false, true]) {
+    test(`stream contradiction Play retry canPlay=${canPlay} intent=${String(intentState)}`, () => {
+      assert.equal(
+        MediaModel.shouldRetryPlayAfterStreamContradiction(
+          { canPlay: canPlay }, intentState),
+        canPlay && intentState === true
+      );
+    });
+  }
+}
+
+test("stream contradiction Play retry rejects missing player", () => {
+  assert.equal(
+    MediaModel.shouldRetryPlayAfterStreamContradiction(null, true),
+    false
+  );
+});
+
+test("fast Spotify toggle is gated to a controllable spotify-player", () => {
+  assert.equal(MediaModel.playerUsesFastTogglePlay({
     dbusName: "org.mpris.MediaPlayer2.spotify_player",
-    canPause: true,
+    canPlay: true,
     canTogglePlaying: true
   }), true);
-  assert.equal(MediaModel.playerNeedsTogglePlayReset({
+  assert.equal(MediaModel.playerUsesFastTogglePlay({
+    identity: "Spotify Player",
+    canPlay: true,
+    canTogglePlaying: true
+  }), true);
+  assert.equal(MediaModel.playerUsesFastTogglePlay({
     dbusName: "org.mpris.MediaPlayer2.spotify_player",
-    canPause: false,
+    canPlay: true,
+    canTogglePlaying: false
+  }), false);
+  assert.equal(MediaModel.playerUsesFastTogglePlay({
+    dbusName: "org.mpris.MediaPlayer2.spotify_player",
+    canPlay: false,
     canTogglePlaying: true
   }), false);
-  assert.equal(MediaModel.playerNeedsTogglePlayReset({
+  assert.equal(MediaModel.playerUsesFastTogglePlay({
     dbusName: "org.mpris.MediaPlayer2.chromium",
-    canPause: true,
+    canPlay: true,
     canTogglePlaying: true
   }), false);
-  assert.equal(MediaModel.playerNeedsTogglePlayReset(null), false);
+  assert.equal(MediaModel.playerUsesFastTogglePlay(null), false);
 });

@@ -77,9 +77,7 @@ function nextSynchronizedStreamState(previousConfirmed, previousLink,
 }
 
 function mprisTransitionMayConfirmPlaying(mprisPlaying, linkState,
-                                         confirmedState, intentState,
-                                         toggleResetPending) {
-  if (toggleResetPending && !mprisPlaying) return false
+                                         confirmedState, intentState) {
   if (!mprisPlaying)
     return !(confirmedState === true
       && linkState === true
@@ -110,11 +108,21 @@ function synchronizedPlaying(player, intents, streamStates, nowMs) {
   return typeof streamState === "boolean" ? streamState : !!player.isPlaying
 }
 
-// spotify-player currently ignores dedicated Play while honoring PlayPause.
-// Other players use idempotent Play/Pause first so repeated clicks cannot
-// invert state when MPRIS and PipeWire notifications arrive out of order.
-function playerRequiresTogglePlay(player) {
+function shouldSuppressPendingPlaybackAction(player, action, intentState,
+                                             confirmedPlaying) {
   if (!player) return false
+  if (action === "pause")
+    return intentState === false
+      && !!confirmedPlaying
+      && !player.canPause
+  return false
+}
+
+// spotify-player serializes requests against one buffered state. Service sends
+// ordered PlayPause→Play: the first request is fast, and the second guarantees
+// the final directional result if the cached toggle branch was wrong.
+function playerUsesFastTogglePlay(player) {
+  if (!player || !player.canTogglePlaying || !player.canPlay) return false
   var dbus = String(player.dbusName || "").toLowerCase()
   var desktop = String(player.desktopEntry || "").toLowerCase()
   var identity = String(player.identity || "").toLowerCase()
@@ -123,33 +131,14 @@ function playerRequiresTogglePlay(player) {
     || identity === "spotify player"
 }
 
-function playerNeedsTogglePlayReset(player) {
-  return !!(player
-    && playerRequiresTogglePlay(player)
-    && player.canPause
-    && player.canTogglePlaying)
-}
-
-function shouldSuppressPendingPlaybackAction(player, action, intentState,
-                                             confirmedPlaying) {
-  if (!player) return false
-  if (action === "play")
-    return intentState === true
-      && !confirmedPlaying
-      && playerRequiresTogglePlay(player)
-  if (action === "pause")
-    return intentState === false
-      && !!confirmedPlaying
-      && !player.canPause
-  return false
-}
-
 function dedicatedPlaybackCommandState(player, action) {
   if (!player) return null
   if (action === "pause" && player.canPause) return false
-  if (action === "play" && player.canPlay
-      && !playerRequiresTogglePlay(player)) return true
   return null
+}
+
+function shouldRetryPlayAfterStreamContradiction(player, intentState) {
+  return !!(player && player.canPlay && intentState === true)
 }
 
 // Pulse-backed playback nodes expose the real running state as pulse.corked.
@@ -163,14 +152,11 @@ function playbackStreamActive(node, hasActiveLink) {
 
 // Single executor for MPRIS playback actions. `action` must be one of
 // next/previous/play/pause; the generic playPause toggle is never accepted
-// here — callers normalize it to an explicit play or pause first. Play and
-// pause are state-aware. Dedicated Play/Pause methods are idempotent under
-// MPRIS and are always dispatched, even when cached state is stale.
-// spotify-player is the one verified exception for Play and uses guarded
-// PlayPause. Toggle-only fallbacks remain guarded because toggling in the
-// wrong direction is destructive.
-// next/previous stay guarded by their own capabilities. Returns whether a
-// player method actually ran.
+// here — callers normalize it to an explicit play or pause first. Dedicated
+// Play/Pause methods are idempotent under MPRIS and are always dispatched,
+// even when cached state is stale. Toggle-only fallbacks remain guarded
+// because toggling in the wrong direction is destructive. next/previous stay
+// guarded by their own capabilities. Returns whether a player method ran.
 function performPlaybackAction(player, action, playingState) {
   if (!player) return false
   var isPlaying = typeof playingState === "boolean" ? playingState : !!player.isPlaying
@@ -192,11 +178,6 @@ function performPlaybackAction(player, action, playingState) {
   }
 
   if (action === "play") {
-    if (playerRequiresTogglePlay(player) && player.canTogglePlaying) {
-      if (isPlaying) return false
-      player.togglePlaying()
-      return true
-    }
     if (player.canPlay) {
       player.play()
       return true
@@ -436,10 +417,10 @@ if (typeof module !== "undefined") {
     streamTransitionContradictsIntent: streamTransitionContradictsIntent,
     mprisTransitionMayConfirmPlaying: mprisTransitionMayConfirmPlaying,
     synchronizedPlaying: synchronizedPlaying,
+    playerUsesFastTogglePlay: playerUsesFastTogglePlay,
     shouldSuppressPendingPlaybackAction: shouldSuppressPendingPlaybackAction,
-    playerRequiresTogglePlay: playerRequiresTogglePlay,
-    playerNeedsTogglePlayReset: playerNeedsTogglePlayReset,
     dedicatedPlaybackCommandState: dedicatedPlaybackCommandState,
+    shouldRetryPlayAfterStreamContradiction: shouldRetryPlayAfterStreamContradiction,
     performPlaybackAction: performPlaybackAction,
     playbackStreamActive: playbackStreamActive,
     sourceIsSelectable: sourceIsSelectable,

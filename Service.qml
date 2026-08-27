@@ -29,12 +29,9 @@ Item {
   // MPRIS Playing signal before the outgoing source is paused.
   property var pendingSourceHandoff: null
   readonly property int sourceHandoffTimeoutMs: 3000
-  // spotify-player Play is normalized through Pause, then one delayed
-  // PlayPause, so stale PlaybackStatus cannot toggle in the wrong direction.
-  property var pendingTogglePlay: null
-  readonly property int togglePlayResetDelayMs: 60
-  readonly property int togglePlayVerifyDelayMs: 180
-  readonly property int togglePlayMaxRetries: 10
+  property var pendingFastSpotifyPlay: null
+  readonly property int fastSpotifyRetryMs: 300
+  readonly property int fastSpotifyMaxRetries: 9
 
   readonly property var players: Mpris.players ? Mpris.players.values : []
   readonly property string mprisPlayingSignature: {
@@ -339,31 +336,40 @@ Item {
         player, playbackIntents, now)
       if (MediaModel.streamTransitionContradictsIntent(
           previousLink, active, intentState))
-        contradictoryIntents.push(key)
+        contradictoryIntents.push({
+          key: key,
+          retryPlay: MediaModel.shouldRetryPlayAfterStreamContradiction(
+            player, intentState)
+        })
     }
 
     if (!playbackStateMapsEqual(streamLinkStates, nextLinks))
       streamLinkStates = nextLinks
     if (!playbackStateMapsEqual(streamPlayerStates, nextConfirmed))
       streamPlayerStates = nextConfirmed
-    for (var j = 0; j < contradictoryIntents.length; j++)
-      removePlaybackIntent(contradictoryIntents[j])
+    for (var j = 0; j < contradictoryIntents.length; j++) {
+      var contradiction = contradictoryIntents[j]
+      removePlaybackIntent(contradiction.key)
+      if (contradiction.retryPlay) {
+        var retryPlayer = playerForKey(contradiction.key)
+        if (retryPlayer)
+          performPlayerAction(
+            retryPlayer, "play", playbackIntentTimeoutMs)
+      }
+    }
   }
 
   function reconcileMprisPlaying(player) {
     var key = playerKey(player)
     if (!key) return false
-    var toggleResetPending = !!(pendingTogglePlay
-      && pendingTogglePlay.playerKey === key)
     var linkState = streamLinkStates[key]
     var confirmedState = streamPlayerStates[key]
     var intentState = MediaModel.playbackIntentState(
       player, playbackIntents, Date.now())
-    // Delayed stale Playing must not resurrect confirmed Pause; the expected
-    // Paused edge inside Spotify's reset must not erase its requested Play.
+    // Delayed stale Playing must not resurrect confirmed Pause; delayed stale
+    // Paused must not overwrite a requested Play whose link is already active.
     if (!MediaModel.mprisTransitionMayConfirmPlaying(
-        player.isPlaying, linkState, confirmedState, intentState,
-        toggleResetPending)) return false
+        player.isPlaying, linkState, confirmedState, intentState)) return false
 
     var next = {}
     for (var existing in streamPlayerStates)
@@ -720,8 +726,8 @@ Item {
   }
 
   // Commands use confirmed stream/MPRIS state, never the optimistic icon
-  // overlay. Repeated idempotent Play/Pause calls are safe; repeated
-  // Spotify PlayPause is suppressed until its first Play settles.
+  // overlay. Dedicated Play/Pause is idempotent; Spotify sends ordered
+  // PlayPause→Play so stale cached toggle state cannot determine the result.
   function performPlayerAction(player, action, intentTimeoutMs) {
     var confirmed = isConfirmedPlaying(player)
     var intentState = MediaModel.playbackIntentState(
@@ -739,77 +745,67 @@ Item {
     return handled
   }
 
-  function clearPendingTogglePlay() {
-    togglePlayResetTimer.stop()
-    togglePlayVerifyTimer.stop()
-    pendingTogglePlay = null
+  function clearFastSpotifyPlay() {
+    fastSpotifyRetryTimer.stop()
+    pendingFastSpotifyPlay = null
   }
 
-  function finishTogglePlay() {
-    var request = pendingTogglePlay
-    if (!request) return
-    var player = playerForKey(request.playerKey)
-    if (!player || !player.canTogglePlaying) {
-      clearPendingTogglePlay()
-      return
-    }
+  function sendFastSpotifyPlay(player, intentTimeoutMs) {
+    // spotify-player handles requests serially against one buffered state.
+    // Toggle first, then idempotent Play: either cached branch ends Playing.
     player.togglePlaying()
-    recordPlaybackIntent(player, true, request.intentTimeoutMs)
-    togglePlayVerifyTimer.restart()
+    player.play()
+    recordPlaybackIntent(player, true, intentTimeoutMs)
   }
 
-  function verifyTogglePlay() {
-    var request = pendingTogglePlay
+  function retryFastSpotifyPlay() {
+    var request = pendingFastSpotifyPlay
     if (!request) return
     var player = playerForKey(request.playerKey)
     if (!player || isConfirmedPlaying(player)) {
-      clearPendingTogglePlay()
+      clearFastSpotifyPlay()
       return
     }
-    if (request.attempt >= togglePlayMaxRetries) {
-      clearPendingTogglePlay()
+    if (request.attempt >= fastSpotifyMaxRetries) {
+      clearFastSpotifyPlay()
       return
     }
 
-    performPlayerAction(player, "pause", playbackIntentTimeoutMs)
-    pendingTogglePlay = {
+    pendingFastSpotifyPlay = {
       playerKey: request.playerKey,
       intentTimeoutMs: request.intentTimeoutMs,
       attempt: request.attempt + 1
     }
-    togglePlayResetTimer.restart()
-  }
-
-  function queueTogglePlay(player, intentTimeoutMs) {
-    var key = playerKey(player)
-    if (!key) return false
-    if (pendingTogglePlay && pendingTogglePlay.playerKey === key) return true
-
-    clearPendingTogglePlay()
-    pendingTogglePlay = {
-      playerKey: key,
-      intentTimeoutMs: Math.max(
-        intentTimeoutMs || playbackIntentTimeoutMs,
-        sourceHandoffTimeoutMs),
-      attempt: 0
-    }
-    // Dedicated Pause is idempotent and establishes a known baseline before
-    // the only PlayPause toggle that spotify-player honors for Play.
-    performPlayerAction(player, "pause", playbackIntentTimeoutMs)
-    togglePlayResetTimer.restart()
-    return true
+    sendFastSpotifyPlay(player, request.intentTimeoutMs)
+    fastSpotifyRetryTimer.restart()
   }
 
   function playPlayer(player, intentTimeoutMs) {
-    if (MediaModel.playerNeedsTogglePlayReset(player))
-      return queueTogglePlay(player, intentTimeoutMs)
-    return performPlayerAction(player, "play", intentTimeoutMs)
+    if (!MediaModel.playerUsesFastTogglePlay(player))
+      return performPlayerAction(player, "play", intentTimeoutMs)
+
+    var key = playerKey(player)
+    if (!key) return false
+    if (pendingFastSpotifyPlay
+        && pendingFastSpotifyPlay.playerKey === key) return true
+    clearFastSpotifyPlay()
+    var timeout = Math.max(
+      intentTimeoutMs || playbackIntentTimeoutMs,
+      sourceHandoffTimeoutMs)
+    pendingFastSpotifyPlay = {
+      playerKey: key,
+      intentTimeoutMs: timeout,
+      attempt: 0
+    }
+    sendFastSpotifyPlay(player, timeout)
+    fastSpotifyRetryTimer.restart()
+    return true
   }
 
   function pausePlayer(player) {
-    if (pendingTogglePlay
-        && pendingTogglePlay.playerKey === playerKey(player))
-      clearPendingTogglePlay()
+    if (pendingFastSpotifyPlay
+        && pendingFastSpotifyPlay.playerKey === playerKey(player))
+      clearFastSpotifyPlay()
     return performPlayerAction(player, "pause")
   }
 
@@ -934,11 +930,8 @@ Item {
       required property var modelData
       target: modelData
       function onIsPlayingChanged() {
-        var pendingForPlayer = pendingTogglePlay
-          && pendingTogglePlay.playerKey === playerKey(modelData)
         var applied = root.reconcileMprisPlaying(modelData)
-        if (applied && !pendingForPlayer)
-          root.settlePlaybackIntent(modelData)
+        if (applied) root.settlePlaybackIntent(modelData)
         root.syncPlaybackStreamStates()
         root.confirmSourceHandoff(modelData)
         root.syncPlayingOrder()
@@ -959,17 +952,10 @@ Item {
   }
 
   Timer {
-    id: togglePlayResetTimer
-    interval: root.togglePlayResetDelayMs
+    id: fastSpotifyRetryTimer
+    interval: root.fastSpotifyRetryMs
     repeat: false
-    onTriggered: root.finishTogglePlay()
-  }
-
-  Timer {
-    id: togglePlayVerifyTimer
-    interval: root.togglePlayVerifyDelayMs
-    repeat: false
-    onTriggered: root.verifyTogglePlay()
+    onTriggered: root.retryFastSpotifyPlay()
   }
 
   Timer {
