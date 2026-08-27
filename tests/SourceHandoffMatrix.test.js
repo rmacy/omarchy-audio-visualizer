@@ -284,6 +284,36 @@ test("authoritative Playing is the only event that confirms a pending target", (
   assert.equal(MediaModel.sourceHandoffConfirmed(pending, target), false);
 });
 
+test("handoff confirmation accepts synchronized stream state over stale MPRIS", () => {
+  const target = player("youtube", false);
+  const pending = {
+    fromKey: "org.mpris.MediaPlayer2.spotify",
+    toKey: MediaModel.playerKey(target)
+  };
+  assert.equal(
+    MediaModel.sourceHandoffConfirmed(pending, target, true),
+    true
+  );
+  target.isPlaying = true;
+  assert.equal(
+    MediaModel.sourceHandoffConfirmed(pending, target, false),
+    false
+  );
+});
+
+test("handoff resolution confirms a stream-playing target with stale MPRIS", () => {
+  const target = player("youtube", false);
+  const pending = {
+    fromKey: "org.mpris.MediaPlayer2.spotify",
+    toKey: MediaModel.playerKey(target)
+  };
+  assert.equal(
+    MediaModel.sourceHandoffResolution(
+      pending, target, player("spotify", true), "playingChanged", true),
+    "confirm"
+  );
+});
+
 const resolutionPendingModes = [
   { name: "missing", value: null },
   {

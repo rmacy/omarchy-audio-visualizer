@@ -63,6 +63,26 @@ function nextStreamPlayerState(previousState, streamActive, streamObserved) {
   return typeof previousState === "boolean" ? false : null
 }
 
+// Only a real raw link edge replaces an existing confirmed state. This keeps
+// a confirmed MPRIS Pause stable when PipeWire leaves the old link object
+// Active, while still allowing a later false→true link edge to confirm Play.
+function nextSynchronizedStreamState(previousConfirmed, previousLink,
+                                     currentLink) {
+  if (typeof currentLink !== "boolean")
+    return typeof previousConfirmed === "boolean" ? previousConfirmed : null
+  if (typeof previousLink !== "boolean") return currentLink
+  if (currentLink !== previousLink) return currentLink
+  return typeof previousConfirmed === "boolean"
+    ? previousConfirmed : currentLink
+}
+
+function mprisTransitionMayConfirmPlaying(mprisPlaying, linkState,
+                                         confirmedState, intentState) {
+  if (!mprisPlaying) return true
+  if (linkState === false) return false
+  return confirmedState !== false || intentState === true
+}
+
 function streamTransitionContradictsIntent(previousState, streamPresent,
                                            intentState) {
   var changed = typeof previousState === "boolean"
@@ -85,15 +105,65 @@ function synchronizedPlaying(player, intents, streamStates, nowMs) {
   return typeof streamState === "boolean" ? streamState : !!player.isPlaying
 }
 
+// spotify-player currently ignores dedicated Play while honoring PlayPause.
+// Other players use idempotent Play/Pause first so repeated clicks cannot
+// invert state when MPRIS and PipeWire notifications arrive out of order.
+function playerRequiresTogglePlay(player) {
+  if (!player) return false
+  var dbus = String(player.dbusName || "").toLowerCase()
+  var desktop = String(player.desktopEntry || "").toLowerCase()
+  var identity = String(player.identity || "").toLowerCase()
+  return dbus.indexOf("spotify_player") !== -1
+    || desktop === "spotify_player"
+    || identity === "spotify player"
+}
+
+function playerNeedsTogglePlayReset(player) {
+  return !!(player
+    && playerRequiresTogglePlay(player)
+    && player.canPause
+    && player.canTogglePlaying)
+}
+
+function shouldSuppressPendingPlaybackAction(player, action, intentState,
+                                             confirmedPlaying) {
+  if (!player) return false
+  if (action === "play")
+    return intentState === true
+      && !confirmedPlaying
+      && playerRequiresTogglePlay(player)
+  if (action === "pause")
+    return intentState === false
+      && !!confirmedPlaying
+      && !player.canPause
+  return false
+}
+
+function dedicatedPlaybackCommandState(player, action) {
+  if (!player) return null
+  if (action === "pause" && player.canPause) return false
+  if (action === "play" && player.canPlay
+      && !playerRequiresTogglePlay(player)) return true
+  return null
+}
+
+// Pulse-backed playback nodes expose the real running state as pulse.corked.
+// Prefer it over PipeWire link state because links may remain Active while
+// their ports are paused. Non-Pulse streams fall back to the tracked link.
+function playbackStreamActive(node, hasActiveLink) {
+  if (!node) return false
+  var corked = nodeProps(node)["pulse.corked"]
+  return typeof corked === "boolean" ? !corked : !!hasActiveLink
+}
+
 // Single executor for MPRIS playback actions. `action` must be one of
 // next/previous/play/pause; the generic playPause toggle is never accepted
 // here — callers normalize it to an explicit play or pause first. Play and
-// pause are state-aware: the desired state is a no-op when already
-// satisfied, otherwise togglePlaying() is preferred — Spotify-like players
-// advertise CanPlay/CanPause but only honor the PlayPause toggle on the
-// bus — and the dedicated method runs only when no toggle is available.
-// `playingState`, when supplied, is the caller's short-lived optimistic state
-// and prevents rapid clicks from waiting for the MPRIS property round trip.
+// pause are state-aware. Dedicated Play/Pause methods are idempotent under
+// MPRIS and are always dispatched, even when cached state is stale.
+// spotify-player is the one verified exception for Play and uses guarded
+// PlayPause. Toggle-only fallbacks remain guarded because toggling in the
+// wrong direction is destructive.
 // next/previous stay guarded by their own capabilities. Returns whether a
 // player method actually ran.
 function performPlaybackAction(player, action, playingState) {
@@ -117,8 +187,8 @@ function performPlaybackAction(player, action, playingState) {
   }
 
   if (action === "play") {
-    if (isPlaying) return false
-    if (player.canTogglePlaying) {
+    if (playerRequiresTogglePlay(player) && player.canTogglePlaying) {
+      if (isPlaying) return false
       player.togglePlaying()
       return true
     }
@@ -126,17 +196,22 @@ function performPlaybackAction(player, action, playingState) {
       player.play()
       return true
     }
-    return false
-  }
-
-  if (action === "pause") {
-    if (!isPlaying) return false
+    if (isPlaying) return false
     if (player.canTogglePlaying) {
       player.togglePlaying()
       return true
     }
+    return false
+  }
+
+  if (action === "pause") {
     if (player.canPause) {
       player.pause()
+      return true
+    }
+    if (!isPlaying) return false
+    if (player.canTogglePlaying) {
+      player.togglePlaying()
       return true
     }
     return false
@@ -202,20 +277,24 @@ function sourceHandoffPlan(current, next, enabled, currentPlaying,
   }
 }
 
-function sourceHandoffConfirmed(pending, player) {
+function sourceHandoffConfirmed(pending, player, confirmedPlaying) {
+  var playing = player && typeof confirmedPlaying === "boolean"
+    ? confirmedPlaying : !!(player && player.isPlaying)
   return !!pending
     && !!pending.toKey
     && !!player
-    && !!player.isPlaying
+    && playing
     && playerKey(player) === pending.toKey
 }
 
 // Pure decisions for the Service's pending handoff lifecycle. Keeping these
 // transitions here makes player removal, timeout, confirmation, and repeated
 // selection behavior deterministic and exhaustively testable.
-function sourceHandoffResolution(pending, target, outgoing, event) {
+function sourceHandoffResolution(pending, target, outgoing, event,
+                                 targetPlaying) {
   if (!pending) return "none"
-  if (target && sourceHandoffConfirmed(pending, target)) return "confirm"
+  if (target && sourceHandoffConfirmed(
+      pending, target, targetPlaying)) return "confirm"
 
   if (event === "timeout") return "rollback"
   if (event === "playersChanged") {
@@ -348,9 +427,16 @@ if (typeof module !== "undefined") {
     effectivePlaying: effectivePlaying,
     playbackIntentState: playbackIntentState,
     nextStreamPlayerState: nextStreamPlayerState,
+    nextSynchronizedStreamState: nextSynchronizedStreamState,
     streamTransitionContradictsIntent: streamTransitionContradictsIntent,
+    mprisTransitionMayConfirmPlaying: mprisTransitionMayConfirmPlaying,
     synchronizedPlaying: synchronizedPlaying,
+    shouldSuppressPendingPlaybackAction: shouldSuppressPendingPlaybackAction,
+    playerRequiresTogglePlay: playerRequiresTogglePlay,
+    playerNeedsTogglePlayReset: playerNeedsTogglePlayReset,
+    dedicatedPlaybackCommandState: dedicatedPlaybackCommandState,
     performPlaybackAction: performPlaybackAction,
+    playbackStreamActive: playbackStreamActive,
     sourceIsSelectable: sourceIsSelectable,
     sourceIsVisible: sourceIsVisible,
     compareSourcePlayers: compareSourcePlayers,

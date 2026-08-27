@@ -490,7 +490,7 @@ BarWidget {
               Text {
                 id: sourceIcon
                 text: sourceRow.player && root.mediaService
-                  && root.mediaService.isEffectivelyPlaying(sourceRow.player) ? "󰏤" : "󰐊"
+                  && root.mediaService.isConfirmedPlaying(sourceRow.player) ? "󰏤" : "󰐊"
                 color: root.bar.foreground
                 font.family: root.bar.fontFamily
                 font.pixelSize: Style.font.iconLarge

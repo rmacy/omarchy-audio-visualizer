@@ -279,3 +279,149 @@ test("an active link is authoritative over stale paused MPRIS", () => {
     true
   );
 });
+
+test("confirmed display ignores a pending Pause until the active link stops", () => {
+  const fixture = player(true);
+  const key = MediaModel.playerKey(fixture);
+  const intents = { [key]: { playing: false, expiresAt: 2000 } };
+  const streams = { [key]: true };
+  assert.equal(
+    MediaModel.synchronizedPlaying(fixture, intents, streams, 1000),
+    false,
+    "intent-aware handoff state may show the requested Pause"
+  );
+  assert.equal(
+    MediaModel.synchronizedPlaying(fixture, null, streams, 1000),
+    true,
+    "confirmed icon/action state remains Playing until the link stops"
+  );
+});
+
+test("confirmed display ignores a pending Play until the active link starts", () => {
+  const fixture = player(false);
+  const key = MediaModel.playerKey(fixture);
+  const intents = { [key]: { playing: true, expiresAt: 2000 } };
+  const streams = { [key]: false };
+  assert.equal(
+    MediaModel.synchronizedPlaying(fixture, intents, streams, 1000),
+    true
+  );
+  assert.equal(
+    MediaModel.synchronizedPlaying(fixture, null, streams, 1000),
+    false
+  );
+});
+
+test("per-player intents and stream states remain isolated", () => {
+  const chrome = {
+    dbusName: "org.mpris.MediaPlayer2.chromium",
+    isPlaying: true
+  };
+  const spotify = {
+    dbusName: "org.mpris.MediaPlayer2.spotify_player",
+    isPlaying: false
+  };
+  const chromeKey = MediaModel.playerKey(chrome);
+  const spotifyKey = MediaModel.playerKey(spotify);
+  const intents = {
+    [chromeKey]: { playing: false, expiresAt: 2000 },
+    [spotifyKey]: { playing: true, expiresAt: 2000 }
+  };
+  const streams = {
+    [chromeKey]: true,
+    [spotifyKey]: false
+  };
+
+  assert.equal(
+    MediaModel.synchronizedPlaying(chrome, intents, streams, 1000), false);
+  assert.equal(
+    MediaModel.synchronizedPlaying(spotify, intents, streams, 1000), true);
+  assert.equal(
+    MediaModel.synchronizedPlaying(chrome, null, streams, 1000), true);
+  assert.equal(
+    MediaModel.synchronizedPlaying(spotify, null, streams, 1000), false);
+});
+
+const streamActivityCases = [
+  { name: "missing node", node: null, link: true, expected: false },
+  { name: "uncorked overrides inactive link", node: { ready: true, properties: { "pulse.corked": false } }, link: false, expected: true },
+  { name: "uncorked agrees with active link", node: { ready: true, properties: { "pulse.corked": false } }, link: true, expected: true },
+  { name: "corked overrides active link", node: { ready: true, properties: { "pulse.corked": true } }, link: true, expected: false },
+  { name: "corked agrees with inactive link", node: { ready: true, properties: { "pulse.corked": true } }, link: false, expected: false },
+  { name: "missing cork falls back active link", node: { ready: true, properties: {} }, link: true, expected: true },
+  { name: "missing cork falls back inactive link", node: { ready: true, properties: {} }, link: false, expected: false },
+  { name: "unready properties fall back to link", node: { ready: false, properties: { "pulse.corked": true } }, link: true, expected: true }
+];
+
+streamActivityCases.forEach(row => {
+  test(`playback stream activity: ${row.name}`, () => {
+    assert.equal(
+      MediaModel.playbackStreamActive(row.node, row.link),
+      row.expected
+    );
+  });
+});
+
+const confirmedModes = [undefined, false, true];
+const rawLinkModes = [undefined, false, true];
+const currentLinkModes = [null, false, true];
+
+for (const previousConfirmed of confirmedModes) {
+  for (const previousLink of rawLinkModes) {
+    for (const currentLink of currentLinkModes) {
+      test(`confirmed stream edge previousConfirmed=${String(previousConfirmed)} previousLink=${String(previousLink)} currentLink=${String(currentLink)}`, () => {
+        let expected;
+        if (typeof currentLink !== "boolean") {
+          expected = typeof previousConfirmed === "boolean"
+            ? previousConfirmed : null;
+        } else if (typeof previousLink !== "boolean") {
+          expected = currentLink;
+        } else if (currentLink !== previousLink) {
+          expected = currentLink;
+        } else {
+          expected = typeof previousConfirmed === "boolean"
+            ? previousConfirmed : currentLink;
+        }
+        assert.equal(
+          MediaModel.nextSynchronizedStreamState(
+            previousConfirmed, previousLink, currentLink),
+          expected
+        );
+      });
+    }
+  }
+}
+
+test("confirmed Pause survives a stale Active link until a real link edge", () => {
+  assert.equal(
+    MediaModel.nextSynchronizedStreamState(false, true, true),
+    false
+  );
+  assert.equal(
+    MediaModel.nextSynchronizedStreamState(false, true, false),
+    false
+  );
+  assert.equal(
+    MediaModel.nextSynchronizedStreamState(false, false, true),
+    true
+  );
+});
+
+for (const mprisPlaying of [false, true]) {
+  for (const linkState of [undefined, null, false, true]) {
+    for (const confirmedState of [undefined, false, true]) {
+      for (const intentState of [null, false, true]) {
+        test(`MPRIS transition confirmation playing=${mprisPlaying} link=${String(linkState)} confirmed=${String(confirmedState)} intent=${String(intentState)}`, () => {
+          const expected = !mprisPlaying
+            || (linkState !== false
+              && (confirmedState !== false || intentState === true));
+          assert.equal(
+            MediaModel.mprisTransitionMayConfirmPlaying(
+              mprisPlaying, linkState, confirmedState, intentState),
+            expected
+          );
+        });
+      }
+    }
+  }
+}

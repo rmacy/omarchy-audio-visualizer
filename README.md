@@ -99,30 +99,29 @@ Manual alternative: clone or copy this folder to
 | Popup source list          | Start/select that source, then pause the outgoing source after confirmation |
 | Hover chip                 | Full "title — artist" tooltip            |
 
-Play/Pause from the chip and the popup is **state-aware**: the control
-checks the selected player's current state first, so pressing play on an
-already-playing player (or pause on an already-paused one) is a no-op —
-it never blindly toggles an already-satisfied state. When the source
-supports MPRIS toggling, the control sends a single `PlayPause` to reach
-the desired state; sources without toggle support get the dedicated
-`Play` or `Pause` call instead. Source handoffs use the same state-aware
-actions: the target receives Play first and the outgoing source receives
-Pause only after the target confirms playback.
+Play/Pause from the chip and popup uses **idempotent commands**. Chromium
+and other normal players receive dedicated `Play` and `Pause`, even when a
+cached state is stale; repeating either command cannot invert playback.
+`spotify-player` is the verified exception for Play — it ignores dedicated
+`Play`, so starting it first sends idempotent Pause to establish a baseline,
+then exactly one delayed `PlayPause`. Toggle-only fallbacks stay state-guarded
+because toggling in the wrong direction is destructive. Source handoffs use
+the same player-safe methods and pause outgoing only after target confirmation.
 
-Control feedback is immediate: after a successful MPRIS call, the service
-renders the requested play/pause state while it waits for the player's
-asynchronous property update. The player remains authoritative; an
-unconfirmed ordinary action expires after 1.2 seconds and a source handoff
-after 2 seconds. Calls still go directly from Quickshell to MPRIS. A Rust
-subprocess or daemon would add another IPC hop, duplicate player state, and
-complicate plugin distribution without removing the MPRIS round trip.
+The chip icon and its next click are based on confirmed synchronized state,
+never a pending intent. A Pause icon remains visible until the audio link
+actually stops, so a second click sends another idempotent Pause instead of
+accidentally sending Play. Pending intent remains internal to handoff
+selection and duplicate-toggle suppression. Calls still go directly from
+Quickshell to MPRIS; a Rust subprocess or daemon would add another IPC hop
+without fixing player state.
 
 MPRIS is not trusted indefinitely for runtime state. Once a player has a
-matching PipeWire playback stream, stream appearance and removal become
-authoritative for the chip icon, active-source selection, and visualizer.
-Any MPRIS transition ends the optimistic overlay, and a contradictory
-PipeWire edge cancels it immediately. External starts and stops therefore
-cannot remain hidden behind stale `PlaybackStatus` or a prior chip action.
+matching PipeWire playback stream, `pulse.corked` is authoritative when
+available, with active-link edges as the fallback. Raw link edges are tracked
+separately from confirmed state so an MPRIS Pause remains stable even when
+Chromium leaves its old link object allocated as Active. External starts and
+stops cannot remain hidden behind stale `PlaybackStatus` or a prior chip action.
 
 ## Source selection
 
@@ -130,9 +129,9 @@ With multiple players running, right-click the chip and pick a source in
 the popup. A row click is a one-click, confirmation-driven handoff: the
 clicked source becomes selected immediately and receives one state-aware
 Play action. The outgoing source stays audible until the clicked player's
-authoritative MPRIS state reports `Playing`; only then does it receive
+confirmed synchronized state reports `Playing`; only then does it receive
 Pause. A target that cannot start or disappears therefore never silences
-the working source, and the selection rolls back after two seconds.
+the working source, and the selection rolls back after three seconds.
 
 Rows are sorted by stable application identity, never by the current track
 or play state, so a handoff cannot move another target under the pointer.

@@ -37,9 +37,9 @@ for (const actualPlaying of [false, true]) {
           });
           const effective = typeof playingOverride === "boolean"
             ? playingOverride : actualPlaying;
-          const expectedAction = effective
-            ? null
-            : (canTogglePlaying ? "toggle" : (canPlay ? "play" : null));
+          const expectedAction = canPlay
+            ? "play"
+            : (!effective && canTogglePlaying ? "toggle" : null);
           const handled = MediaModel.performPlaybackAction(
             player, "play", playingOverride);
 
@@ -63,9 +63,9 @@ for (const actualPlaying of [false, true]) {
           });
           const effective = typeof playingOverride === "boolean"
             ? playingOverride : actualPlaying;
-          const expectedAction = !effective
-            ? null
-            : (canTogglePlaying ? "toggle" : (canPause ? "pause" : null));
+          const expectedAction = canPause
+            ? "pause"
+            : (effective && canTogglePlaying ? "toggle" : null);
           const handled = MediaModel.performPlaybackAction(
             player, "pause", playingOverride);
 
@@ -238,14 +238,14 @@ rapidSequences.forEach(sequence => {
   });
 });
 
-test("toggle capability always outranks dedicated play and pause", () => {
+test("generic players prefer idempotent dedicated methods over toggle", () => {
   const playFixture = actionPlayer({
     isPlaying: false,
     canTogglePlaying: true,
     canPlay: true
   });
   assert.equal(MediaModel.performPlaybackAction(playFixture.player, "play"), true);
-  assert.deepEqual(playFixture.log, ["toggle"]);
+  assert.deepEqual(playFixture.log, ["play"]);
 
   const pauseFixture = actionPlayer({
     isPlaying: true,
@@ -253,5 +253,211 @@ test("toggle capability always outranks dedicated play and pause", () => {
     canPause: true
   });
   assert.equal(MediaModel.performPlaybackAction(pauseFixture.player, "pause"), true);
-  assert.deepEqual(pauseFixture.log, ["toggle"]);
+  assert.deepEqual(pauseFixture.log, ["pause"]);
+});
+
+test("spotify-player uses guarded toggle for Play but dedicated Pause", () => {
+  const playFixture = actionPlayer({
+    dbusName: "org.mpris.MediaPlayer2.spotify_player",
+    isPlaying: false,
+    canTogglePlaying: true,
+    canPlay: true,
+    canPause: true
+  });
+  assert.equal(MediaModel.playerRequiresTogglePlay(playFixture.player), true);
+  assert.equal(MediaModel.performPlaybackAction(playFixture.player, "play"), true);
+  assert.deepEqual(playFixture.log, ["toggle"]);
+
+  const alreadyPlaying = actionPlayer({
+    dbusName: "org.mpris.MediaPlayer2.spotify_player",
+    isPlaying: true,
+    canTogglePlaying: true,
+    canPlay: true
+  });
+  assert.equal(MediaModel.performPlaybackAction(alreadyPlaying.player, "play"), false);
+  assert.deepEqual(alreadyPlaying.log, []);
+
+  const pauseFixture = actionPlayer({
+    dbusName: "org.mpris.MediaPlayer2.spotify_player",
+    isPlaying: true,
+    canTogglePlaying: true,
+    canPause: true
+  });
+  assert.equal(MediaModel.performPlaybackAction(pauseFixture.player, "pause"), true);
+  assert.deepEqual(pauseFixture.log, ["pause"]);
+});
+
+test("dedicated methods dispatch despite stale confirmed state", () => {
+  const stalePlay = actionPlayer({
+    isPlaying: true,
+    canPlay: true,
+    canTogglePlaying: true
+  });
+  assert.equal(MediaModel.performPlaybackAction(stalePlay.player, "play", true), true);
+  assert.deepEqual(stalePlay.log, ["play"]);
+
+  const stalePause = actionPlayer({
+    isPlaying: false,
+    canPause: true,
+    canTogglePlaying: true
+  });
+  assert.equal(MediaModel.performPlaybackAction(stalePause.player, "pause", false), true);
+  assert.deepEqual(stalePause.log, ["pause"]);
+});
+
+const suppressionProfiles = [
+  {
+    name: "chromium-dedicated",
+    player: {
+      dbusName: "org.mpris.MediaPlayer2.chromium",
+      canPause: true
+    }
+  },
+  {
+    name: "spotify-player",
+    player: {
+      dbusName: "org.mpris.MediaPlayer2.spotify_player",
+      canPause: true
+    }
+  },
+  {
+    name: "toggle-only",
+    player: {
+      dbusName: "org.mpris.MediaPlayer2.toggle_only",
+      canPause: false
+    }
+  }
+];
+
+for (const profile of suppressionProfiles) {
+  for (const action of ["play", "pause", "next"]) {
+    for (const intentState of [null, false, true]) {
+      for (const confirmedPlaying of [false, true]) {
+        test(`pending action suppression profile=${profile.name} action=${action} intent=${intentState} confirmed=${confirmedPlaying}`, () => {
+          const requiresTogglePlay = profile.name === "spotify-player";
+          const expected = action === "play"
+            ? intentState === true && !confirmedPlaying && requiresTogglePlay
+            : (action === "pause"
+              ? intentState === false
+                && confirmedPlaying
+                && !profile.player.canPause
+              : false);
+          assert.equal(
+            MediaModel.shouldSuppressPendingPlaybackAction(
+              profile.player, action, intentState, confirmedPlaying),
+            expected
+          );
+        });
+      }
+    }
+  }
+}
+
+test("pending action suppression rejects missing player", () => {
+  assert.equal(
+    MediaModel.shouldSuppressPendingPlaybackAction(
+      null, "play", true, false),
+    false
+  );
+});
+
+test("repeated dedicated Pause is idempotently dispatched", () => {
+  const chrome = actionPlayer({
+    dbusName: "org.mpris.MediaPlayer2.chromium",
+    isPlaying: true,
+    canPause: true,
+    canTogglePlaying: true
+  });
+  assert.equal(MediaModel.performPlaybackAction(
+    chrome.player, "pause", true), true);
+  assert.equal(MediaModel.performPlaybackAction(
+    chrome.player, "pause", true), true);
+  assert.deepEqual(chrome.log, ["pause", "pause"]);
+});
+
+const dedicatedStateCases = [
+  {
+    name: "Chromium Play",
+    player: { dbusName: "org.mpris.MediaPlayer2.chromium", canPlay: true },
+    action: "play",
+    expected: true
+  },
+  {
+    name: "Chromium Pause",
+    player: { dbusName: "org.mpris.MediaPlayer2.chromium", canPause: true },
+    action: "pause",
+    expected: false
+  },
+  {
+    name: "Spotify toggle Play waits for confirmation",
+    player: {
+      dbusName: "org.mpris.MediaPlayer2.spotify_player",
+      canPlay: true,
+      canTogglePlaying: true
+    },
+    action: "play",
+    expected: null
+  },
+  {
+    name: "Spotify dedicated Pause",
+    player: {
+      dbusName: "org.mpris.MediaPlayer2.spotify_player",
+      canPause: true,
+      canTogglePlaying: true
+    },
+    action: "pause",
+    expected: false
+  },
+  {
+    name: "toggle-only Play",
+    player: { canTogglePlaying: true },
+    action: "play",
+    expected: null
+  },
+  {
+    name: "toggle-only Pause",
+    player: { canTogglePlaying: true },
+    action: "pause",
+    expected: null
+  },
+  {
+    name: "unsupported action",
+    player: { canPlay: true, canPause: true },
+    action: "next",
+    expected: null
+  },
+  {
+    name: "missing player",
+    player: null,
+    action: "pause",
+    expected: null
+  }
+];
+
+dedicatedStateCases.forEach(row => {
+  test(`dedicated command confirmation: ${row.name}`, () => {
+    assert.equal(
+      MediaModel.dedicatedPlaybackCommandState(row.player, row.action),
+      row.expected
+    );
+  });
+});
+
+test("toggle Play reset is limited to fully controllable spotify-player", () => {
+  assert.equal(MediaModel.playerNeedsTogglePlayReset({
+    dbusName: "org.mpris.MediaPlayer2.spotify_player",
+    canPause: true,
+    canTogglePlaying: true
+  }), true);
+  assert.equal(MediaModel.playerNeedsTogglePlayReset({
+    dbusName: "org.mpris.MediaPlayer2.spotify_player",
+    canPause: false,
+    canTogglePlaying: true
+  }), false);
+  assert.equal(MediaModel.playerNeedsTogglePlayReset({
+    dbusName: "org.mpris.MediaPlayer2.chromium",
+    canPause: true,
+    canTogglePlaying: true
+  }), false);
+  assert.equal(MediaModel.playerNeedsTogglePlayReset(null), false);
 });
