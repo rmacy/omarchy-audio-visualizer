@@ -352,15 +352,18 @@ Item {
 
   function reconcileMprisPlaying(player) {
     var key = playerKey(player)
-    if (!key) return
+    if (!key) return false
+    var toggleResetPending = !!(pendingTogglePlay
+      && pendingTogglePlay.playerKey === key)
     var linkState = streamLinkStates[key]
     var confirmedState = streamPlayerStates[key]
     var intentState = MediaModel.playbackIntentState(
       player, playbackIntents, Date.now())
-    // A delayed stale Play must not resurrect a confirmed Pause. A requested
-    // Play may confirm only when no known paused link contradicts it.
+    // Delayed stale Playing must not resurrect confirmed Pause; the expected
+    // Paused edge inside Spotify's reset must not erase its requested Play.
     if (!MediaModel.mprisTransitionMayConfirmPlaying(
-        player.isPlaying, linkState, confirmedState, intentState)) return
+        player.isPlaying, linkState, confirmedState, intentState,
+        toggleResetPending)) return false
 
     var next = {}
     for (var existing in streamPlayerStates)
@@ -368,6 +371,7 @@ Item {
     next[key] = !!player.isPlaying
     if (!playbackStateMapsEqual(streamPlayerStates, next))
       streamPlayerStates = next
+    return true
   }
 
   function syncMprisPlayingStates() {
@@ -784,7 +788,9 @@ Item {
     clearPendingTogglePlay()
     pendingTogglePlay = {
       playerKey: key,
-      intentTimeoutMs: intentTimeoutMs || playbackIntentTimeoutMs,
+      intentTimeoutMs: Math.max(
+        intentTimeoutMs || playbackIntentTimeoutMs,
+        sourceHandoffTimeoutMs),
       attempt: 0
     }
     // Dedicated Pause is idempotent and establishes a known baseline before
@@ -928,8 +934,11 @@ Item {
       required property var modelData
       target: modelData
       function onIsPlayingChanged() {
-        root.settlePlaybackIntent(modelData)
-        root.reconcileMprisPlaying(modelData)
+        var pendingForPlayer = pendingTogglePlay
+          && pendingTogglePlay.playerKey === playerKey(modelData)
+        var applied = root.reconcileMprisPlaying(modelData)
+        if (applied && !pendingForPlayer)
+          root.settlePlaybackIntent(modelData)
         root.syncPlaybackStreamStates()
         root.confirmSourceHandoff(modelData)
         root.syncPlayingOrder()

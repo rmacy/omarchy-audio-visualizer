@@ -77,8 +77,13 @@ function nextSynchronizedStreamState(previousConfirmed, previousLink,
 }
 
 function mprisTransitionMayConfirmPlaying(mprisPlaying, linkState,
-                                         confirmedState, intentState) {
-  if (!mprisPlaying) return true
+                                         confirmedState, intentState,
+                                         toggleResetPending) {
+  if (toggleResetPending && !mprisPlaying) return false
+  if (!mprisPlaying)
+    return !(confirmedState === true
+      && linkState === true
+      && intentState === true)
   if (linkState === false) return false
   return confirmedState !== false || intentState === true
 }

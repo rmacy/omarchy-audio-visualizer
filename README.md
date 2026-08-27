@@ -103,10 +103,11 @@ Play/Pause from the chip and popup uses **idempotent commands**. Chromium
 and other normal players receive dedicated `Play` and `Pause`, even when a
 cached state is stale; repeating either command cannot invert playback.
 `spotify-player` is the verified exception for Play — it ignores dedicated
-`Play`, so starting it first sends idempotent Pause to establish a baseline,
-then exactly one delayed `PlayPause`. Toggle-only fallbacks stay state-guarded
-because toggling in the wrong direction is destructive. Source handoffs use
-the same player-safe methods and pause outgoing only after target confirmation.
+`Play`, so starting it uses a bounded Pause→PlayPause reset/retry sequence.
+Its Play intent remains live through the handoff window, and the expected
+stale `Paused` edge from the reset cannot overwrite an already-active stream.
+Toggle-only fallbacks remain guarded. Source handoffs use the same player-safe
+methods and pause outgoing only after synchronized target confirmation.
 
 The chip icon and its next click are based on confirmed synchronized state,
 never a pending intent. A Pause icon remains visible until the audio link
